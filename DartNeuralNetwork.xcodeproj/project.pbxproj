@@ -35,16 +35,6 @@
 			path = DartNeuralNetwork;
 			sourceTree = "<group>";
 		};
-		3970405E2D5A998200A29B58 /* DartNeuralNetworkTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = DartNeuralNetworkTests;
-			sourceTree = "<group>";
-		};
-		397040682D5A998200A29B58 /* DartNeuralNetworkUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = DartNeuralNetworkUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,8 +66,6 @@
 			isa = PBXGroup;
 			children = (
 				3970404D2D5A998100A29B58 /* DartNeuralNetwork */,
-				3970405E2D5A998200A29B58 /* DartNeuralNetworkTests */,
-				397040682D5A998200A29B58 /* DartNeuralNetworkUITests */,
 				3970404C2D5A998100A29B58 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -130,9 +118,6 @@
 			dependencies = (
 				3970405D2D5A998200A29B58 /* PBXTargetDependency */,
 			);
-			fileSystemSynchronizedGroups = (
-				3970405E2D5A998200A29B58 /* DartNeuralNetworkTests */,
-			);
 			name = DartNeuralNetworkTests;
 			packageProductDependencies = (
 			);
@@ -152,9 +137,6 @@
 			);
 			dependencies = (
 				397040672D5A998200A29B58 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				397040682D5A998200A29B58 /* DartNeuralNetworkUITests */,
 			);
 			name = DartNeuralNetworkUITests;
 			packageProductDependencies = (
