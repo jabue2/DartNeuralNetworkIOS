@@ -1,12 +1,3 @@
-//
-//  HomographyHelper.mm
-//  DartNeuralNetwork
-//
-//  Created by Jan Buechele on 21.02.25.
-//
-
-
-// HomographyHelper.mm
 #import "HomographyHelper.h"
 #import <UIKit/UIKit.h>
 #import <opencv2/opencv.hpp>

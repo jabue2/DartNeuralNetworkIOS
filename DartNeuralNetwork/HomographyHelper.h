@@ -1,12 +1,3 @@
-//
-//  HomographyHelper.h
-//  DartNeuralNetwork
-//
-//  Created by Jan Buechele on 21.02.25.
-//
-
-
-// HomographyHelper.h
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <simd/simd.h>

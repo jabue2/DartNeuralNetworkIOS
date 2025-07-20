@@ -1,35 +1,30 @@
-//
-//  DartboardProcessing.swift
-//  DartNeuralNetwork
-//
-//  Created by Jan Buechele on 21.02.25.
-//
-
 import UIKit
 import CoreML
 import Vision
 import simd
 
+// Core class responsible for dartboard detection, dart detection, and scoring calculations
+// Uses machine learning models and computer vision techniques to process images
 class DartboardProcessing {
-    
+
     // MARK: - Models and Calibration Properties
     let dartboardModel: VNCoreMLModel
-    
+
     // Board-plane calibration coordinates (normalized; 6 points).
     var boardplaneCalibrationCoords: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 6)
-    
+
     var savedCalibrationPoints: [CGPoint] = []
-    
+
     // --- Scoring & Segmentation Properties (from get_scores.py) ---
     // Class names mapping (for YOLO output, if needed)
     let classNames: [Int: String] = [0: "calib_1", 1: "calib_2", 2: "calib_4", 3: "calib_3", 4: "dart"]
-    
+
     // Dartboard measurements (in mm)
     // Note: these measurements come from your Python solution.
     let ring: CGFloat = 10.0          // width of the double and treble rings
     let bullseyeWire: CGFloat = 1.6     // width of the bullseye wires
     // let wire: CGFloat = 1.0          // width of other wires (not used here)
-    
+
     // Scoring names and radii (normalized)
     // scoringNames: index 0 = DB (50), 1 = SB (25), 2 = S, 3 = T, 4 = S, 5 = D, 6 = miss
     let scoringNames: [String] = ["DB", "SB", "S", "T", "S", "D", "miss"]
@@ -46,7 +41,7 @@ class DartboardProcessing {
                                    [7, 18],
                                    [16, 4],
                                    [8, 13]]
-    
+
     // MARK: - Initialization
     init?() {
         do {
@@ -57,7 +52,7 @@ class DartboardProcessing {
             print("Error loading dartboard model:", error)
             return nil
         }
-        
+
         // Compute scoring radii.
         // Original radii in mm: [0, 6.35, 15.9, 107.4 - ring, 107.4, 170.0 - ring, 170.0]
         // Adjust bullseye radii by adding half the bullseye wire width to indices 1 and 2.
@@ -76,7 +71,7 @@ class DartboardProcessing {
             // Normalize by dividing by the dartboard diameter (451 mm)
             return v / 451.0
         }
-        
+
         // Compute boardplane calibration coordinates using the last scoring radius (h)
         // (These calculations mirror the Python code.)
         let h = scoringRadii.last!  // normalized outer radius (~0.377)
@@ -96,8 +91,9 @@ class DartboardProcessing {
         boardplaneCalibrationCoords[4] = CGPoint(x: 0.5 - a3, y: 0.5 - o3)
         boardplaneCalibrationCoords[5] = CGPoint(x: 0.5 + a3, y: 0.5 + o3)
     }
-    
+
     // MARK: - Dartboard Detection & Cropping
+    // Uses the dartboard detection ML model to locate and crop the dartboard in an image
     func detectDartboard(in image: UIImage, completion: @escaping (UIImage) -> Void) {
         let request = VNCoreMLRequest(model: dartboardModel) { request, error in
             if let error = error {
@@ -112,7 +108,7 @@ class DartboardProcessing {
                 return
             }
             let boundingBox = first.boundingBox
-            
+
             // Convert normalized bounding box to pixel coordinates.
             let width = image.size.width
             let height = image.size.height
@@ -139,7 +135,7 @@ class DartboardProcessing {
             completion(image)
         }
     }
-    
+
     // MARK: - Dart Detection with Annotation & Extraction
     /// Uses the dart detection model (e.g. bestSmall) to detect darts and returns an annotated image and the detection observations.
     func detectDartsAndAnnotate(in image: UIImage, completion: @escaping (UIImage, [VNRecognizedObjectObservation]) -> Void) {
@@ -176,7 +172,8 @@ class DartboardProcessing {
             completion(image, [])
         }
     }
-    
+
+    // Draws bounding boxes and labels around detected objects in the image
     func annotateDetections(on image: UIImage, observations: [VNRecognizedObjectObservation]) -> UIImage {
         let renderer = UIGraphicsImageRenderer(size: image.size)
         return renderer.image { context in
@@ -192,7 +189,7 @@ class DartboardProcessing {
                                   width: bbox.width * width,
                                   height: bbox.height * height)
                 //print("Detection: \(label) - BBox (normalized): \(bbox)")
-                
+
                 let strokeColor: UIColor = label.contains("dart") ? .red : .blue
                 cgContext.setStrokeColor(strokeColor.cgColor)
                 cgContext.setLineWidth(2)
@@ -206,7 +203,7 @@ class DartboardProcessing {
             }
         }
     }
-    
+
     // MARK: - Homography Computation
     func findHomography(calibrationCoords: [CGPoint],
                         boardplaneCalibrationCoords: [CGPoint],
@@ -215,7 +212,7 @@ class DartboardProcessing {
         let validIndices = calibrationCoords.enumerated().compactMap { (index, point) -> Int? in
             return (point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1) ? index : nil
         }
-        
+
         guard validIndices.count >= 4 else {
             print("Not enough valid calibration points")
             return nil
@@ -224,7 +221,7 @@ class DartboardProcessing {
         let validDst = validIndices.map { boardplaneCalibrationCoords[$0] }
         let scaledSrc = validSrc.map { CGPoint(x: $0.x * imageSize.width, y: $0.y * imageSize.height) }
         let scaledDst = validDst.map { CGPoint(x: $0.x * imageSize.width, y: $0.y * imageSize.height) }
-        
+
         //print("\n=== Homography Input Points ===")
         //print("📌 Source Points (Detected Calibration - Scaled to \(imageSize.width)x\(imageSize.height)):")
         for (i, point) in scaledSrc.enumerated() {
@@ -235,13 +232,13 @@ class DartboardProcessing {
             //print("Dst \(i): (\(point.x), \(point.y))")
         }
         //print("==============================\n")
-        
+
         let srcNSValues = scaledSrc.map { NSValue(cgPoint: $0) }
         let dstNSValues = scaledDst.map { NSValue(cgPoint: $0) }
         let H_matrix = HomographyHelper.findHomography(fromPoints: srcNSValues, toPoints: dstNSValues)
         return H_matrix
     }
-    
+
     // MARK: - Transformation to Board-Plane (Step 4)
     /// Transforms an array of dart coordinates (in normalized image coordinates)
     /// into board-plane coordinates (normalized) using the homography matrix.
@@ -264,7 +261,7 @@ class DartboardProcessing {
         }
         return transformed
     }
-    
+
     // MARK: - Dart Scoring (Step 5)
     /// Computes the dart scores using transformed dart coordinates (normalized board-plane space).
     /// Returns an array of dart labels (e.g., "T20", "SB", etc.) and the total score.
@@ -272,7 +269,7 @@ class DartboardProcessing {
         var dartLabels: [String] = Array(repeating: "", count: transformedDarts.count)
         var totalScore = 0
         let epsilon: CGFloat = 0.00001
-        
+
         // Process each dart.
         for (i, dart) in transformedDarts.enumerated() {
             // Avoid division-by-zero by nudging x if needed.
@@ -281,13 +278,13 @@ class DartboardProcessing {
                 x += epsilon
             }
             let y = dart.y
-            
+
             // Compute the angle (in degrees) relative to the center (0.5, 0.5)
             // Using arctan((y - 0.5)/(x - 0.5)) as in Python.
             var angleDeg = CGFloat(atan((y - 0.5) / (x - 0.5))) * 180 / .pi
             // Floor if positive; ceil if negative.
             angleDeg = angleDeg > 0 ? floor(angleDeg) : ceil(angleDeg)
-            
+
             // Determine possible segment numbers.
             var possibleNumbers: [Int] = []
             if abs(angleDeg) >= 81 {
@@ -302,19 +299,19 @@ class DartboardProcessing {
                     possibleNumbers = [3, 20]
                 }
             }
-            
+
             // Decide which coordinate to use for disambiguation.
             // If possibleNumbers equals [6, 11] then use the x-coordinate (index 0); otherwise use y (index 1).
             let coordIndex = (possibleNumbers == [6, 11]) ? 0 : 1
             // Since our dart coordinate is 2D, use x if coordIndex == 0, else y.
             let coordValue = (coordIndex == 0) ? dart.x : dart.y
             let number = (coordValue > 0.5) ? possibleNumbers[0] : possibleNumbers[1]
-            
+
             // Compute distance from center.
             let dx = dart.x - 0.5
             let dy = dart.y - 0.5
             let distance = sqrt(dx * dx + dy * dy)
-            
+
             // Determine the scoring region.
             // Mimic the Python logic by finding the last index where distance > scoringRadii.
             var regionIndex = 0
@@ -325,7 +322,7 @@ class DartboardProcessing {
             }
             // Use the region to look up the scoring name.
             let region = scoringNames[regionIndex]
-            
+
             // Define scores for each region.
             // "DB": 50, "SB": 25, "S": single, "T": triple, "D": double, "miss": 0.
             var label = ""
@@ -355,7 +352,7 @@ class DartboardProcessing {
         }
         return (dartLabels, totalScore)
     }
-    
+
     // MARK: - Pipeline Function (Integrated Steps)
     /// Runs the full pipeline:
     /// 1. Detects and annotates darts.
@@ -367,7 +364,7 @@ class DartboardProcessing {
         // Preserve original image for homography/calibration.
         let originalImage = image
         detectDartsAndAnnotate(in: image) { annotatedImage, dartObservations in
-            
+
             // --- Filter out calibration detections ---
             let dartObservationsFiltered = dartObservations.filter { obs in
                 if let label = obs.labels.first?.identifier.lowercased() {
@@ -375,7 +372,7 @@ class DartboardProcessing {
                 }
                 return false
             }
-            
+
             // Extract dart centers from filtered detections (using normalized bbox centers).
             var dartCenters: [CGPoint] = []
             for obs in dartObservationsFiltered {
@@ -384,7 +381,7 @@ class DartboardProcessing {
                                      y: bbox.origin.y + bbox.height/2)
                 dartCenters.append(center)
             }
-            
+
             // Compute homography using calibration points.
             self.computeHomography(for: originalImage) { H in
                 guard let H = H else {
@@ -398,7 +395,7 @@ class DartboardProcessing {
                 let (labels, total) = self.score(transformedDarts: transformedDarts)
                 print("Dart Labels: \(labels)")
                 print("Total Score: \(total)")
-                
+
                 // Annotate the image with score labels.
                 let finalImage = self.annotateScores(on: annotatedImage, labels: labels, positions: transformedDarts, imageSize: originalImage.size)
                 completion(finalImage)
@@ -406,7 +403,7 @@ class DartboardProcessing {
         }
     }
 
-    
+
     /// Helper to compute homography using calibration points detected in the image.
     func computeHomography(for image: UIImage, using calibrationPoints: [CGPoint]? = nil, completion: @escaping (simd_float3x3?) -> Void) {
         detectCalibrationPoints(in: image) { calibrationPoints in
@@ -430,7 +427,7 @@ class DartboardProcessing {
             }
         }
     }
-    
+
     /// Detects calibration points using the dart detection model.
     func detectCalibrationPoints(in image: UIImage, completion: @escaping ([CGPoint]) -> Void) {
             do {
@@ -438,7 +435,7 @@ class DartboardProcessing {
                 let dartModel = try VNCoreMLModel(for: dartMLModel)
                 let request = VNCoreMLRequest(model: dartModel) { request, error in
                     var calibrationPoints: [CGPoint?] = [nil, nil, nil, nil] // For calib_1, calib_2, calib_3, calib_4
-                    
+
                     if let observations = request.results as? [VNRecognizedObjectObservation] {
                         for obs in observations {
                             if let label = obs.labels.first?.identifier.lowercased() {
@@ -454,7 +451,7 @@ class DartboardProcessing {
                             }
                         }
                     }
-                    
+
                     //print("Final Calibration Points:")
                     for (i, point) in calibrationPoints.enumerated() {
                         if let p = point {
@@ -463,7 +460,7 @@ class DartboardProcessing {
                             //print("⚠️ Missing calib_\(i+1)")
                         }
                     }
-                    
+
                     let finalPoints = calibrationPoints.compactMap { $0 }
                     // Save the calibration points if enough are detected.
                     if finalPoints.count >= 4 {
@@ -471,7 +468,7 @@ class DartboardProcessing {
                     }
                     completion(finalPoints)
                 }
-                
+
                 request.imageCropAndScaleOption = .scaleFill
                 guard let cgImage = image.cgImage else {
                     completion([])
@@ -486,7 +483,7 @@ class DartboardProcessing {
                 completion([])
             }
     }
-    
+
     // MARK: - Annotate Scores on Image
     /// Draws the dart score labels at the given positions (transformed board-plane positions scaled back to pixel coordinates).
     func annotateScores(on image: UIImage, labels: [String], positions: [CGPoint], imageSize: CGSize) -> UIImage {
@@ -507,36 +504,37 @@ class DartboardProcessing {
             }
         }
     }
-    
+
     // MARK: - Basic Image Helpers
     func cropImage(_ image: UIImage, with cropRect: CGRect) -> UIImage {
         // First, fix the image orientation.
         let fixedImage = fixOrientation(of: image)
-        
+
         // Ensure we have a CGImage.
         guard let cgImage = fixedImage.cgImage else {
             print("Failed to retrieve CGImage.")
             return image
         }
-        
+
         // Convert the crop rectangle from points to pixels using the image's scale factor.
         let scale = fixedImage.scale
         let pixelCropRect = CGRect(x: cropRect.origin.x * scale,
                                    y: cropRect.origin.y * scale,
                                    width: cropRect.size.width * scale,
                                    height: cropRect.size.height * scale)
-        
+
         // Crop the CGImage using the pixel-based rectangle.
         guard let croppedCGImage = cgImage.cropping(to: pixelCropRect) else {
             print("Cropping failed, returning original image.")
             return image
         }
-        
+
         // Create and return a new UIImage from the cropped CGImage with the original scale and orientation.
         return UIImage(cgImage: croppedCGImage, scale: scale, orientation: fixedImage.imageOrientation)
     }
 
-    
+
+    // Resizes an image to the specified dimensions while maintaining aspect ratio
     func resizeImage(_ image: UIImage, to size: CGSize) -> UIImage {
         UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
         image.draw(in: CGRect(origin: .zero, size: size))
@@ -544,7 +542,8 @@ class DartboardProcessing {
         UIGraphicsEndImageContext()
         return resizedImage
     }
-    
+
+    // Corrects the orientation of an image to ensure proper processing
     func fixOrientation(of image: UIImage) -> UIImage {
         if image.imageOrientation == .up { return image }
         UIGraphicsBeginImageContextWithOptions(image.size, false, image.scale)

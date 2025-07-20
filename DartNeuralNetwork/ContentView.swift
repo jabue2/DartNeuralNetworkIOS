@@ -1,5 +1,6 @@
 import SwiftUI
 
+// Main view controller that manages the tab-based navigation for the app
 struct ContentView: View {
     var body: some View {
         TabView {
