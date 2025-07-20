@@ -64,6 +64,10 @@ The project is organized into several key components:
 3. Build and run on a compatible iOS device
 4. Choose between Photo Mode, Live Detection, or Game Mode
 
+## Demo
+
+![DartNeuralNetwork Demo](demo.gif)
+
 ## Acknowledgments
 
 This project utilizes:
