@@ -129,4 +129,4 @@ Temporary Items
 
 /DartNeuralNetwork/opencv2.framework
 
-.idea
+.idea!/DartNeuralNetwork.xcodeproj/
