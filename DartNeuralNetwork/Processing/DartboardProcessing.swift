@@ -383,8 +383,8 @@ class DartboardProcessing {
             }
 
             // Compute homography using calibration points.
-            self.computeHomography(for: originalImage) { H in
-                guard let H = H else {
+            self.computeHomography(for: originalImage) { result in
+                guard let H = result?.H else {
                     print("Homography unavailable – skipping score transformation.")
                     completion(annotatedImage)
                     return
@@ -402,16 +402,22 @@ class DartboardProcessing {
             }
         }
     }
-
+    
+    struct HomographyResult {
+        let H: simd_float3x3
+        let usedSavedPoints: Bool
+    }
 
     /// Helper to compute homography using calibration points detected in the image.
-    func computeHomography(for image: UIImage, using calibrationPoints: [CGPoint]? = nil, completion: @escaping (simd_float3x3?) -> Void) {
+    func computeHomography(for image: UIImage, using calibrationPoints: [CGPoint]? = nil, completion: @escaping (HomographyResult?) -> Void) {
         detectCalibrationPoints(in: image) { calibrationPoints in
             let pointsToUse: [CGPoint]
+            var usedSaved = false
             if calibrationPoints.count < 4 {
                 print("Not enough calibration points detected: \(calibrationPoints.count)")
                 print("Using stored calibration points instead.")
                 pointsToUse = self.savedCalibrationPoints
+                usedSaved = true
             } else {
                 pointsToUse = calibrationPoints
             }
@@ -420,7 +426,7 @@ class DartboardProcessing {
                                            boardplaneCalibrationCoords: boardplanePoints,
                                            imageSize: image.size) {
                 //print("Homography Matrix computed successfully:\n\(H)")
-                completion(H)
+                DispatchQueue.main.async { completion(HomographyResult(H: H, usedSavedPoints: usedSaved)) }
             } else {
                 print("Homography computation failed.")
                 completion(nil)
