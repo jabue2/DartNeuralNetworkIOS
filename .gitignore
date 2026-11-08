@@ -30,7 +30,7 @@ DerivedData/
 !default.mode2v3
 *.perspectivev3
 !default.perspectivev3
-DartNeuralNetwork.xcodeproj
+# The Xcode project is tracked (it lists the app's files and build settings); per-user state is not (xcuserdata/ above).
 
 ## Obj-C/Swift specific
 *.hmap
@@ -129,4 +129,8 @@ Temporary Items
 
 /DartNeuralNetwork/opencv2.framework
 
-.idea!/DartNeuralNetwork.xcodeproj/
+.idea/
+
+# The user's own labelled photos are used by the tests on this Mac only and must never be published (this repository is public).
+# Without them the photo tests skip.
+/DartNeuralNetworkTests/RealPhotos/
