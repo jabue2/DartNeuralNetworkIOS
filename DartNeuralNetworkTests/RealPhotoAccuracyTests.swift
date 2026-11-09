@@ -91,7 +91,7 @@ final class RealPhotoAccuracyTests: XCTestCase {
     // MARK: Single image
 
     /// The full single-image path: Core ML, decoding, calibration, RANSAC homography, scoring.
-    /// Offline, the Python pipeline with this model gets 94.61% of these 297 darts.
+    /// Offline, the Python Core ML pipeline with this model (v6rf12h) gets 95.96% of these 297 darts.
     func testSingleImageScoringOnLabelledPhotos() throws {
         try TestResources.requirePhotos()
         let model = try XCTUnwrap(TestResources.model, "model did not load")

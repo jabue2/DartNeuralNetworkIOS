@@ -4,15 +4,15 @@ import Foundation
 /// Every tuning constant of the RF-DETR detector in one place.
 ///
 /// Frame counts are counted in processed frames (about `maxFramesPerSecond` per second), not
-/// camera frames. The reference numbers come from the offline evaluation of v6rf12
+/// camera frames. The reference numbers come from the offline evaluation of v6rf12 (576 px); the bundled model is now v6rf12h (800 px), whose confidences were not re-tuned on video
 /// (`~/DartSynthetic/public_check`): calibration is essentially solved, about 1% of darts are
 /// never seen, 8-14% are seen only below 0.25 confidence, and 5-8% land in the neighbouring
 /// segment, mostly tips within 2 mm of a wire.
 enum DetectorTuning {
     // MARK: Model and decoding
 
-    /// Side of the square model input in pixels (RF-DETR Medium was trained at 576).
-    static let modelInputSide = 576
+    /// Side of the square model input in pixels: v6rf12h, RF-DETR Medium trained at 800 (v6rf12 was 576).
+    static let modelInputSide = 800
     /// Lowest confidence decoded at all. The tracker and the debug view filter further.
     static let decodeFloor = 0.02
     /// Same-class detections closer than this (fraction of the model input, i.e. of the crop)
@@ -55,7 +55,7 @@ enum DetectorTuning {
     // MARK: Crop
 
     /// Once locked, the model looks at the board's bounding box (board edge 225.5 mm, from the
-    /// homography) plus this margin per side, stretched to 576 x 576. This is how the offline
+    /// homography) plus this margin per side, stretched to the model input square. This is how the offline
     /// two-pass evaluation cropped (`crop_box`, margin .02), so it is the measured setup.
     static let boardEdgeMM = 225.5
     static let cropMargin = 0.02
@@ -121,7 +121,7 @@ enum DetectorTuning {
 
     // MARK: Camera and pacing
 
-    /// 4K frames: the board crop then keeps most of the 576 model pixels even from the oche.
+    /// 4K frames: the board crop then keeps most of the model's input pixels even from the oche.
     static let cameraPreset: AVCaptureSession.Preset = .hd4K3840x2160
     static let fallbackCameraPreset: AVCaptureSession.Preset = .hd1920x1080
     /// Upper bound on processed frames per second (heat and battery). Frames arriving while the

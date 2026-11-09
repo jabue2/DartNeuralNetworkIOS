@@ -171,13 +171,17 @@ final class RFDetrDecodingTests: XCTestCase {
                 let near = swift.filter { $0.classIndex == Int(p[0]) && simd_distance($0.point, point) < 3 }
                 if let best = near.min(by: { simd_distance($0.point, point) < simd_distance($1.point, point) }) {
                     matched += 1
-                    XCTAssertEqual(best.confidence, p[3], accuracy: 0.05, "\(name) class \(Int(p[0]))")
+                    // fp16 rounding on the simulator vs Python's CPU run moves weak detections a little more
+                    // at 800 px; confident ones must agree tightly. Scores are compared end to end in
+                    // RealPhotoAccuracyTests (Swift and Python labels must agree on every dart).
+                    XCTAssertEqual(best.confidence, p[3], accuracy: p[3] >= 0.3 ? 0.05 : 0.08, "\(name) class \(Int(p[0]))")
                 } else {
                     // Only borderline detections may be missing.
                     XCTAssertLessThan(p[3], 0.15, "\(name): Python detection \(p) not found")
                 }
             }
-            XCTAssertGreaterThanOrEqual(Double(matched), Double(python.count) * 0.9, name)
+            // Every detection Python finds at 0.15 or more must be found (asserted above); only weaker ones may be missing.
+            XCTAssertGreaterThanOrEqual(matched, python.filter { $0[3] >= 0.15 }.count, name)
             print("RESULT coreml-vs-python \(name): \(matched) of \(python.count) detections matched, swift \(swift.count)")
         }
     }

@@ -105,7 +105,7 @@ enum RFDetrDecoder {
     }
 }
 
-/// Writes the model input: crop, bilinear stretch to 576 x 576 (OpenCV `INTER_LINEAR`
+/// Writes the model input: crop, bilinear stretch to `modelInputSide` squared (OpenCV `INTER_LINEAR`
 /// sampling, no letterbox), RGB, /255, ImageNet mean and std, NCHW float32.
 enum ModelInputWriter {
     static let mean: [Float] = [0.485, 0.456, 0.406]
@@ -179,9 +179,9 @@ enum ModelInputWriter {
     }
 }
 
-/// The bundled RF-DETR Core ML model (v6rf12, fp16). Not thread-safe: use from one queue.
+/// The bundled RF-DETR Core ML model (v6rf12h: 800 px input, fp16). Not thread-safe: use from one queue.
 final class RFDetrModel {
-    static let resourceName = "v6rf12_fp16"
+    static let resourceName = "v6rf12h_fp16"
 
     private let model: MLModel
     private let input: MLMultiArray

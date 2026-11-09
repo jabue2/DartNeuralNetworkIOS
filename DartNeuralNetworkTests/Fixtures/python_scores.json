@@ -1,6 +1,6 @@
 {
 "darts": 297,
-"correct": 281,
+"correct": 285,
 "rows": [
 {
 "name": "02491f68-IMG_5656",
@@ -186,7 +186,7 @@
 "predicted": "S8"
 }
 ],
-"cal_points": 11
+"cal_points": 12
 },
 {
 "name": "13fe7095-IMG_5735",
@@ -469,7 +469,7 @@
 },
 {
 "truth": "D1",
-"predicted": "D1"
+"predicted": "miss"
 }
 ],
 "cal_points": 12
@@ -695,7 +695,7 @@
 "darts": [
 {
 "truth": "S18",
-"predicted": "D18"
+"predicted": "S18"
 },
 {
 "truth": "S19",
@@ -887,7 +887,7 @@
 },
 {
 "truth": "S1",
-"predicted": null
+"predicted": "S1"
 }
 ],
 "cal_points": 12
@@ -943,7 +943,7 @@
 },
 {
 "truth": "T7",
-"predicted": "S7"
+"predicted": "T7"
 },
 {
 "truth": "S3",
@@ -1267,7 +1267,7 @@
 },
 {
 "truth": "T19",
-"predicted": "S3"
+"predicted": "T19"
 },
 {
 "truth": "S3",
@@ -1335,7 +1335,7 @@
 },
 {
 "truth": "S10",
-"predicted": "S10"
+"predicted": null
 }
 ],
 "cal_points": 12
@@ -1401,7 +1401,7 @@
 "darts": [
 {
 "truth": "S10",
-"predicted": "S6"
+"predicted": "S10"
 },
 {
 "truth": "S18",
@@ -1469,7 +1469,7 @@
 },
 {
 "truth": "S6",
-"predicted": null
+"predicted": "S6"
 }
 ],
 "cal_points": 12
@@ -1604,7 +1604,7 @@
 "predicted": null
 }
 ],
-"cal_points": 9
+"cal_points": 4
 },
 {
 "name": "c618e65b-IMG_5864",
@@ -1835,7 +1835,7 @@
 },
 {
 "truth": "D1",
-"predicted": null
+"predicted": "D1"
 }
 ],
 "cal_points": 12
@@ -1937,7 +1937,7 @@
 },
 {
 "truth": "S19",
-"predicted": "S19"
+"predicted": null
 },
 {
 "truth": "S3",

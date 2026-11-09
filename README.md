@@ -16,7 +16,7 @@ DartNeuralNetwork scores darts from a single phone camera. A Core ML model finds
 
 ## Technical Implementation
 
-Detection uses one Core ML model, `ML-Models/v6rf12_fp16.mlpackage`: RF-DETR Medium (576 x 576 input, fp16, Neural Engine), trained on Blender renders plus real photos. It finds 12 calibration points on the outer double wire and dart tips. Everything else is plain Swift:
+Detection uses one Core ML model, `ML-Models/v6rf12h_fp16.mlpackage`: RF-DETR Medium (800 x 800 input, fp16, Neural Engine), trained on Blender renders plus real photos. It finds 12 calibration points on the outer double wire and dart tips. Everything else is plain Swift:
 
 - Decoding the model's 300 queries (sigmoid, top 300 over all class scores, duplicate merge), as in `tools/check_coreml.py` of the training repository (DartSynthetic)
 - Image-to-board homography from the calibration points (DLT with an exhaustive RANSAC), no OpenCV
