@@ -183,6 +183,101 @@ final class MultiFrameTrackerTests: XCTestCase {
         XCTAssertEqual(darts.map(\.segment), [.triple(20)])
     }
 
+    // MARK: Misses and short visits
+
+    /// From a steep angle the model also fires along a dart's barrel and flight, which can reach
+    /// past the double ring. Such points, and darts in the number ring, are never reported: a miss
+    /// scores nothing, and the visit's empty slots become misses when its darts are pulled.
+    func testDetectionsOutsideTheScoringAreaAreNeverReported() {
+        lock()
+        let pastTheDouble = Scene.Dart(mm: SIMD2(15, -176), confidence: 0.6)    // 176.6 mm from the centre
+        let numberRing = Scene.Dart(mm: SIMD2(-120, 150), confidence: 0.8)     // 192 mm
+        run(40, darts: [pastTheDouble, numberRing])
+        XCTAssertTrue(darts.isEmpty)
+        run(5, darts: [pastTheDouble, numberRing, .init(mm: mm(.double(20)), confidence: 0.8)])
+        XCTAssertEqual(darts.map(\.segment), [.double(20)])
+    }
+
+    /// Re-check: a tip that wobbles across the outer double wire is one dart, not two half tracks.
+    func testATipWobblingAcrossTheOuterWireConfirms() {
+        lock()
+        let d20 = mm(.double(20)), direction = d20 / simd_length(d20)
+        for i in 0..<40 { run(1, darts: [.init(mm: direction * (i % 2 == 0 ? 169 : 170.5), confidence: 0.8)]) }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Re-check: a false detection that never confirms, or one outside the board, must not keep a
+    /// short visit open forever.
+    func testAFalseCandidateDoesNotBlockThePullForever() {
+        lock()
+        run(5, darts: [.init(mm: mm(.single(20)), confidence: 0.8)])
+        let flicker = Scene.Dart(mm: mm(.single(6)), confidence: 0.08)   // too weak to ever confirm
+        let outside = Scene.Dart(mm: SIMD2(0, -179), confidence: 0.6)
+        for i in 0..<120 { run(1, darts: i % 5 == 4 ? [outside] : [flicker, outside]) }
+        XCTAssertTrue(events.contains(.visitEnded))
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    func testPullingTheDartsOfAShortVisitEndsIt() {
+        lock()
+        run(5, darts: [.init(mm: mm(.triple(20)), confidence: 0.8), .init(mm: mm(.single(5)), confidence: 0.8)])
+        XCTAssertEqual(darts.count, 2)
+        // The third dart missed the board; the player pulls the two that scored.
+        run(DetectorTuning.pullFramesNeeded - 1)
+        XCTAssertFalse(events.contains(.visitEnded))
+        run(1)
+        XCTAssertEqual(Array(events.suffix(2)), [.visitEnded, .boardCleared])
+        // The next player's darts score.
+        run(5, darts: [.init(mm: mm(.double(16)), confidence: 0.8)])
+        XCTAssertEqual(darts.last?.segment, .double(16))
+    }
+
+    /// Review: a dart seen below the presence floor is still in the board.
+    func testAFaintVisitDartKeepsTheVisitOpen() {
+        lock()
+        let dart = Scene.Dart(mm: mm(.single(20)), confidence: 0.8)
+        run(5, darts: [dart])
+        run(40, darts: [.init(mm: dart.mm, confidence: 0.03)])
+        XCTAssertFalse(events.contains(.visitEnded))
+    }
+
+    /// Review: a dart still building evidence is a dart in the board, not an empty board.
+    func testADartStillBeingConfirmedBlocksThePull() {
+        lock()
+        run(5, darts: [.init(mm: mm(.single(20)), confidence: 0.8)])
+        let slow = Scene.Dart(mm: mm(.single(6)), confidence: 0.08)   // needs 13 frames to confirm
+        run(30, darts: [slow])
+        XCTAssertFalse(events.contains(.visitEnded))
+        XCTAssertEqual(darts.map(\.segment), [.single(20), .single(6)])
+    }
+
+    /// Review: a track past the double ring must not swallow a real double next to it.
+    func testAnOutsideTrackDoesNotAbsorbADouble() {
+        lock()
+        let d20 = mm(.double(20)), direction = d20 / simd_length(d20)
+        for radius in [179.0, 172.9] {   // far past the wire, and just past it (re-check 2)
+            tracker = MultiFrameTracker(ignoresDartsAtStart: false)
+            events = []
+            lock()
+            let outside = Scene.Dart(mm: direction * radius, confidence: 0.6)
+            run(30, darts: [outside])
+            for i in 0..<40 { run(1, darts: i % 2 == 0 ? [outside] : [.init(mm: direction * 168, confidence: 0.8)]) }
+            XCTAssertEqual(darts.map(\.segment), [.double(20)], "outside track at \(radius) mm")
+        }
+    }
+
+    func testAShortVisitStaysOpenWhileItsDartsAreSeen() {
+        lock()
+        let dart = Scene.Dart(mm: mm(.triple(20)), confidence: 0.8)
+        run(5, darts: [dart])
+        run(40, darts: [.init(mm: dart.mm, confidence: 0.06)])          // seen faintly
+        for i in 0...30 { run(1, darts: i % 2 == 0 ? [dart] : []) }       // seen in every other frame
+        run(25, calibration: [0, 4])                                      // a player in front of the board
+        run(30, calibration: Set(0..<6))                                  // a player beside it
+        XCTAssertFalse(events.contains(.visitEnded))
+        XCTAssertEqual(clears, 0)
+    }
+
     // MARK: Occlusion and removal
 
     func testOccludedFramesNeitherConfirmNorClear() {

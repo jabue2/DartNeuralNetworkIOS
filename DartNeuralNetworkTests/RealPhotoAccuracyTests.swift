@@ -136,9 +136,14 @@ final class RealPhotoAccuracyTests: XCTestCase {
         try TestResources.requirePhotos()
         let model = try XCTUnwrap(TestResources.model, "model did not load")
         var tally = Tally()
-        var reported = 0
+        var reported = 0, labelledMisses = 0
         for name in photos {
-            let photo = try load(name)
+            // The tracker never reports a miss (the game fills misses in when the darts are
+            // pulled), so only darts on the board are scored here.
+            let labelled = try load(name)
+            let onBoard = labelled.tips.filter { BoardGeometry.segment(at: BoardPoint(millimetres: labelled.truth.apply($0)!)) != .miss }
+            labelledMisses += labelled.tips.count - onBoard.count
+            let photo = Labelled(name: labelled.name, frame: labelled.frame, truth: labelled.truth, tips: onBoard)
             var tracker = MultiFrameTracker(ignoresDartsAtStart: false)
             // Identical frames give identical detections: run the model once per crop.
             var cache: [String: [ModelDetection]] = [:]
@@ -154,7 +159,7 @@ final class RealPhotoAccuracyTests: XCTestCase {
             score(photo, pixels: darts.compactMap { toImage?.apply($0.boardMM) },
                   segments: tracker.isLocked ? darts.map(\.segment) : nil, into: &tally)
         }
-        print("RESULT multi-frame tracker, photo held 15 frames: \(tally.line) (\(reported) darts reported)")
+        print("RESULT multi-frame tracker, photo held 15 frames, darts on the board: \(tally.line) (\(reported) darts reported, \(labelledMisses) labelled misses left out)")
         XCTAssertGreaterThanOrEqual(tally.share, 0.9, tally.line)
     }
 

@@ -98,8 +98,16 @@ enum DetectorTuning {
     /// still in the board) belong to that dart: never reported again. About the duplicate-merge
     /// distance on a board-sized crop (2% of ~470 mm).
     static let confirmedDartRadiusMM = 10.0
-    /// Detections farther than this from the board centre are ignored (board edge is 225.5 mm).
-    static let maxDartRadiusMM = 235.0
+    /// Detections farther than this from the board centre are ignored: the scoring area ends at
+    /// 170 mm, and the margin only lets a track near the double ring keep its outlying observations.
+    /// Tracks whose tip lies outside 170 mm are never reported either. A miss scores nothing, and
+    /// from a steep angle the model also fires along a dart's barrel and flight, which reach past
+    /// the double ring; reporting those as misses ended visits early (phone test, 2026-11-11).
+    /// Misses are filled in when a short visit's darts are pulled (`pullFramesNeeded`).
+    static let maxDartRadiusMM = 180.0
+    /// Detections on opposite sides of the outer double wire join one track only when both lie
+    /// within this distance of the wire (tip noise); farther apart they are different objects.
+    static let ringJoinMarginMM = 1.5
     static let maxDartsPerVisit = 3
     /// Tracks that appear in the first usable frames after the detector starts are background:
     /// darts left in the board from before are not scored for the first player. (Off for replay.)
@@ -112,6 +120,19 @@ enum DetectorTuning {
     static let presenceFloor = 0.05
     /// Clear views in a row with none of the closed visit's darts before `.boardCleared`.
     static let removalFramesNeeded = 8
+    /// While throwing, clear views in a row with none of the visit's darts (at any decoded
+    /// confidence) and no candidate dart before the visit ends
+    /// with `.visitEnded` and `.boardCleared` (its other darts missed the board and were never
+    /// reported). Longer than the removal count: ending a visit by mistake costs a dart.
+    static let pullFramesNeeded = 12
+    /// A candidate track on the board blocks the pull only this many usable frames after it
+    /// appeared: a real dart confirms well within it (13 frames at the 0.08 track floor), a false
+    /// detection that never confirms must not keep a visit open forever.
+    /// Known limits (review, 2026-11-12): a dart that flickers for longer than this before it turns
+    /// steady can be lost to a pull (enter it by hand), and a false detection that keeps vanishing
+    /// and reappearing in the board can keep a short visit open (tap Next). Both look the same as
+    /// the other case at the moment of deciding, so a time bound is the trade-off.
+    static let pullCandidateFrames = 30
     /// After a clear, new tracks near a removed dart stay background this long, in case a hand
     /// hid a dart while the board looked empty.
     static let removedMemoryFrames = 30

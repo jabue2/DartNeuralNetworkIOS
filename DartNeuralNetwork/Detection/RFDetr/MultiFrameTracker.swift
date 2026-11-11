@@ -24,6 +24,9 @@ import simd
 ///   closed visit still in the board) belong to them. After `endVisit()` nothing new is reported
 ///   until the closed visit's darts are absent from `removalFramesNeeded` clear views in a row.
 ///   Any usable frame that still shows one of those darts, clear view or not, starts the count over.
+/// - **Misses.** Tips outside the double ring are never reported (`maxDartRadiusMM`). When the
+///   darts of a visit with fewer than three are pulled (`pullFramesNeeded`), the tracker ends the
+///   visit itself (`.visitEnded`, `.boardCleared`); the game counts the empty slots as misses.
 struct MultiFrameTracker {
     typealias Tuning = DetectorTuning
 
@@ -131,6 +134,8 @@ struct MultiFrameTracker {
     /// The closed visit, restored by `resumeVisit()`. Nil once the board was cleared or reset.
     private var closedVisit: [ConfirmedDart]?
     private var removalStreak = 0
+    /// Clear views in a row without any of the open visit's darts (see `pullFramesNeeded`).
+    private var pullStreak = 0
     private var removedDarts: [(boardMM: SIMD2<Double>, until: Int)] = []
     private var nextID = 1
     /// Darts already in the board when the detector starts are background (see `startupBaselineFrames`).
@@ -150,6 +155,7 @@ struct MultiFrameTracker {
         resumedDarts = []
         if phase != .resetBarrier { phase = .awaitingRemoval }
         removalStreak = 0
+        pullStreak = 0
     }
 
     /// Reopens the visit `endVisit()` closed: its darts count again as this visit's, new darts are reported.
@@ -166,6 +172,7 @@ struct MultiFrameTracker {
         closedVisit = nil
         phase = .throwing
         removalStreak = 0
+        pullStreak = 0
     }
 
     /// New game: forget the visit, and if darts may still be in the board, report nothing until it is clear.
@@ -179,6 +186,7 @@ struct MultiFrameTracker {
         markTracksAsBackground()
         phase = oldDarts.isEmpty && !candidates ? .throwing : .resetBarrier
         removalStreak = 0
+        pullStreak = 0
     }
 
     /// The camera stopped and may have moved: lock again from scratch. Darts are kept.
@@ -392,10 +400,17 @@ struct MultiFrameTracker {
         }.sorted { $0.confidence > $1.confidence }
 
         // 1. Detections near darts already reported belong to them.
+        let openVisit = visitDarts + resumedDarts
+        func nearOpenVisit(_ p: SIMD2<Double>) -> Bool {
+            openVisit.contains { simd_distance($0.boardMM, p) <= Tuning.confirmedDartRadiusMM }
+        }
+        // For the pull, any decoded detection of a visit dart, however faint, means it is still there.
+        let visitDartSeen = !openVisit.isEmpty && frame.darts(minConfidence: Tuning.decodeFloor)
+            .contains { h.apply($0.point).map(nearOpenVisit) ?? false }
         var free: [Observation] = []
         var oldDartSeen = false
         for o in seen {
-            if (visitDarts + resumedDarts).contains(where: { simd_distance($0.boardMM, o.boardMM) <= Tuning.confirmedDartRadiusMM }) { continue }
+            if nearOpenVisit(o.boardMM) { continue }
             if oldDarts.contains(where: { simd_distance($0.boardMM, o.boardMM) <= Tuning.confirmedDartRadiusMM }) {
                 oldDartSeen = true
                 continue
@@ -419,7 +434,7 @@ struct MultiFrameTracker {
         var matched = Set<Int>()
         for o in free where o.confidence >= Tuning.trackFloor {
             let nearest = tracks.indices
-                .filter { !matched.contains(tracks[$0].id) }
+                .filter { !matched.contains(tracks[$0].id) && Self.mayJoin(o.boardMM, trackTip: tracks[$0].tipMM) }
                 .map { ($0, simd_distance(tracks[$0].tipMM, o.boardMM)) }
                 .filter { $0.1 <= Tuning.associationRadiusMM }
                 .min { $0.1 < $1.1 }
@@ -447,27 +462,62 @@ struct MultiFrameTracker {
         }
         tracks.removeAll { $0.missStreak > ($0.isHeldBack ? Tuning.backgroundForgetFrames : Tuning.maxMissStreak) }
 
+        // Pulled before three darts were reported (the others missed the board): none of the
+        // visit's darts and no candidate dart in this clear view, for several in a row.
+        var pulled = false
+        if phase == .throwing && !openVisit.isEmpty {
+            // A young candidate on the board may be a dart still building evidence. One that has
+            // not confirmed by `pullCandidateFrames`, or lies outside the board, never will.
+            let candidateSeen = tracks.contains {
+                matched.contains($0.id) && !$0.isHeldBack
+                    && usableFrameCount - $0.firstFrame < Tuning.pullCandidateFrames
+                    && simd_length($0.tipMM) <= BoardGeometry.doubleOuterMM
+            }
+            if visitDartSeen || candidateSeen {
+                pullStreak = 0
+            } else if clearView {
+                pullStreak += 1
+                pulled = pullStreak >= Tuning.pullFramesNeeded
+            }
+        } else {
+            pullStreak = 0
+        }
+
         // Finish the removal after this frame's detections joined tracks: a dart first seen on the
         // clearing frame was thrown before the clear, so it becomes background like the rest.
         if removalComplete { events += finishRemoval() }
+        if pulled { return events + finishPull() }
 
         // 4. Confirm persistent tracks.
         guard phase == .throwing else { return events }
         let ready = tracks.filter { !$0.isHeldBack && isConfirmable($0) }
             .sorted { evidence(of: $0) > evidence(of: $1) }
         for track in ready where visitDarts.count < Tuning.maxDartsPerVisit {
-            tracks.removeAll { $0.id == track.id }
             let tip = track.tipMM
+            let segment = BoardGeometry.segment(at: BoardPoint(millimetres: tip))
+            // Outside the double ring: a barrel or flight seen from a steep angle, or a real miss.
+            // Never reported; the track stays and scores if its tip settles inside.
+            if segment == .miss { continue }
+            tracks.removeAll { $0.id == track.id }
             // Drifted onto a dart already reported: it is that dart.
             if (visitDarts + resumedDarts + oldDarts).contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM }) { continue }
-            let dart = ConfirmedDart(id: track.id, boardMM: tip,
-                                     segment: BoardGeometry.segment(at: BoardPoint(millimetres: tip)),
+            let dart = ConfirmedDart(id: track.id, boardMM: tip, segment: segment,
                                      confidence: track.observations.map(\.confidence).max() ?? 0)
             visitDarts.append(dart)
             events.append(.dartDetected(DetectedDart(segment: dart.segment, boardPosition: BoardPoint(millimetres: tip),
                                                      confidence: dart.confidence)))
         }
         return events
+    }
+
+    /// An observation joins a track only on the same side of the outer double wire, unless both
+    /// lie close to it: a barrel or flight seen past the ring must not pull a real double's median
+    /// outside the board, while a tip that wobbles across the wire stays one track.
+    static func mayJoin(_ observation: SIMD2<Double>, trackTip: SIMD2<Double>) -> Bool {
+        let ring = BoardGeometry.doubleOuterMM
+        let o = simd_length(observation), t = simd_length(trackTip)
+        if (o > ring) == (t > ring) { return true }
+        return abs(o - ring) <= Tuning.ringJoinMarginMM && abs(t - ring) <= Tuning.ringJoinMarginMM
     }
 
     /// Summed confidence within the evidence window.
@@ -502,6 +552,18 @@ struct MultiFrameTracker {
         closedVisit = nil
         phase = .throwing
         return wasClosed ? [.boardCleared] : []
+    }
+
+    /// The open visit's darts were pulled: end the visit. Like a removal, whatever is still
+    /// detected now was there before the next throw and is never reported.
+    private mutating func finishPull() -> [DetectionEvent] {
+        let until = usableFrameCount + Tuning.removedMemoryFrames
+        removedDarts += (resumedDarts + visitDarts).map { ($0.boardMM, until) }
+        visitDarts = []
+        resumedDarts = []
+        pullStreak = 0
+        markTracksAsBackground()
+        return [.visitEnded, .boardCleared]
     }
 
     private mutating func markTracksAsBackground() {

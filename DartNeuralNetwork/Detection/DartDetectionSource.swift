@@ -40,9 +40,9 @@ enum DetectionEvent: Equatable {
     case status(BoardStatus)
     /// A new dart landed. Each physical dart is reported once per visit.
     case dartDetected(DetectedDart)
-    /// The detector ended the current visit on its own (for example a player stood in
-    /// front of the board after fewer than three darts). A `.boardCleared` follows once
-    /// the darts are pulled.
+    /// The detector ended the current visit on its own: the visit's darts (fewer than three,
+    /// the others missed the board) were pulled. A `.boardCleared` follows once the darts are
+    /// pulled (the RF-DETR source sends both together), and the game counts the empty slots as misses.
     case visitEnded
     /// The darts of the last visit were pulled and the board is empty again.
     case boardCleared

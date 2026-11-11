@@ -59,7 +59,9 @@ extension UIColor {
     }
 }
 
-/// The colour of the board bed a segment belongs to.
+/// The colour of a segment in chips, slots and the picker. It follows the ring only: singles
+/// neutral, doubles and the outer bull green, trebles and the bull red. (The real board alternates
+/// colours from number to number, which looked arbitrary next to each other in a keypad.)
 struct BedStyle {
     let fill: Color
     let text: Color
@@ -73,20 +75,17 @@ struct BedStyle {
             fill = Theme.bedRed; text = .white; needsOutline = false
         case .outerBull:
             fill = Theme.bedGreen; text = .white; needsOutline = false
-        case .single(let n):
-            if BedStyle.isDarkBed(n) {
-                fill = Theme.bedBlack; text = .white; needsOutline = true
-            } else {
-                fill = Theme.bedCream; text = Theme.bedCreamInk; needsOutline = false
-            }
-        case .double(let n), .triple(let n):
-            fill = BedStyle.isDarkBed(n) ? Theme.bedRed : Theme.bedGreen
-            text = .white
-            needsOutline = false
+        case .single:
+            fill = Theme.surface; text = Theme.ink; needsOutline = true
+        case .double:
+            fill = Theme.bedGreen; text = .white; needsOutline = false
+        case .triple:
+            fill = Theme.bedRed; text = .white; needsOutline = false
         }
     }
 
-    /// 20 sits on a black single bed with red rings; the colours alternate around the board.
+    /// For drawing the board itself: 20 sits on a black single bed with red rings; the colours
+    /// alternate around the board.
     static func isDarkBed(_ number: Int) -> Bool {
         (Segment.boardOrder.firstIndex(of: number) ?? 0) % 2 == 0
     }
