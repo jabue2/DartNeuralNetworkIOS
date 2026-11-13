@@ -236,6 +236,7 @@ struct CameraCheckView: View {
         CameraFramingView(source: holder.source, status: holder.status, onClose: onClose)
             .onAppear { holder.start() }
             .onDisappear { holder.source.stop() }
+            .keepsScreenAwake()
     }
 
     @MainActor

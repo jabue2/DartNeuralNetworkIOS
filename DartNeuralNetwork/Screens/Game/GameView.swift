@@ -37,6 +37,8 @@ struct GameView: View {
             }
         }
         .animation(.snappy, value: match.isOver)
+        // Detection needs the camera running; the summary screen may let the phone sleep.
+        .keepsScreenAwake(!match.isOver)
         .sheet(item: $picking) { selection in
             SegmentPickerSheet(title: "Dart \(selection.index + 1)", current: selection.current) { segment in
                 session.set(slot: selection.index, ofVisit: selection.visitNumber, to: segment)
