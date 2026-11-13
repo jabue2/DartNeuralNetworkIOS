@@ -418,6 +418,7 @@
 				INFOPLIST_FILE = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Darts;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Darts uses the camera to see your board and score each dart.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Darts shows the live scoreboard on your laptop, tablet or TV on the same Wi-Fi.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -453,6 +454,7 @@
 				INFOPLIST_FILE = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Darts;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Darts uses the camera to see your board and score each dart.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Darts shows the live scoreboard on your laptop, tablet or TV on the same Wi-Fi.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

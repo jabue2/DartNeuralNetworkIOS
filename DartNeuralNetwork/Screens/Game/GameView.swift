@@ -3,14 +3,18 @@ import SwiftUI
 /// The live game: remaining score, the three darts of the visit, and the camera status.
 struct GameView: View {
     @ObservedObject var session: GameSession
+    /// The web scoreboard; nil hides its button (previews, tests).
+    var remote: RemoteScoreboard?
     var onExit: () -> Void
-    /// DEBUG demo hooks: open the picker on a slot / expand the camera on appear.
+    /// DEBUG demo hooks: open the picker on a slot / expand the camera / open the remote sheet on appear.
     var initialPickerSlot: Int?
     var startsWithCameraExpanded = false
+    var startsWithRemoteOpen = false
 
     @State private var picking: SlotSelection?
     @State private var cameraExpanded = false
     @State private var confirmLeave = false
+    @State private var showingRemote = false
 
     private var match: X01Match { session.match }
 
@@ -48,8 +52,12 @@ struct GameView: View {
         .confirmationDialog("Leave this game?", isPresented: $confirmLeave, titleVisibility: .visible) {
             Button("Leave game", role: .destructive, action: onExit)
         }
+        .sheet(isPresented: $showingRemote) {
+            if let remote { RemoteScoreboardSheet(remote: remote) }
+        }
         .onAppear {
             if startsWithCameraExpanded { cameraExpanded = true }
+            if startsWithRemoteOpen { showingRemote = true }
         }
         .task {
             // Demo hook: wait for the scripted darts, then open the picker on that slot.
@@ -117,6 +125,10 @@ struct GameView: View {
             .frame(height: 44)
 
             Spacer(minLength: 0)
+
+            if let remote {
+                RemoteButton(remote: remote) { showingRemote = true }
+            }
 
             CameraTile(source: session.source, status: session.boardStatus, isHidden: cameraExpanded) {
                 withAnimation(.snappy) { cameraExpanded = true }
@@ -285,6 +297,30 @@ struct GameView: View {
             }
         }
         .animation(.snappy, value: visitDone)
+    }
+}
+
+/// Opens "Show on another screen"; a green dot while a page is connected.
+private struct RemoteButton: View {
+    @ObservedObject var remote: RemoteScoreboard
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "display")
+        }
+        .buttonStyle(RoundIconButtonStyle())
+        .overlay(alignment: .topTrailing) {
+            if remote.isOn && remote.viewers > 0 {
+                Circle()
+                    .fill(Theme.accent)
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().strokeBorder(Theme.background, lineWidth: 2))
+                    .offset(x: 2, y: -2)
+            }
+        }
+        .accessibilityLabel("Show on another screen")
+        .accessibilityValue(remote.viewers > 0 ? "\(remote.viewers) connected" : "")
     }
 }
 

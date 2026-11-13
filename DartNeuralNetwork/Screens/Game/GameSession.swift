@@ -10,6 +10,8 @@ final class GameSession: ObservableObject, Identifiable {
     /// The visit the detector was told to close and whose darts it waits to see pulled.
     /// A `.boardCleared` only acts on this visit, so a late event cannot end another player's visit.
     private var visitAwaitingRemoval: UUID?
+    /// Changes with every new leg (rematch), so a stale edit from another screen is not applied to it.
+    private(set) var legID = UUID()
 
     init(match: X01Match, source: DartDetectionSource) {
         self.match = match
@@ -89,6 +91,7 @@ final class GameSession: ObservableObject, Identifiable {
 
     func rematch() {
         match = X01Match(rules: match.rules, players: match.players)
+        legID = UUID()
         visitAwaitingRemoval = nil
         source.reset()
     }

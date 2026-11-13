@@ -188,6 +188,8 @@ struct DemoScenario {
     var script = DemoDetectionSource.Script()
     var openPickerSlot: Int?
     var expandCamera = false
+    /// Opens "Show on another screen".
+    var openRemote = false
     /// Uses the camera source (shows the no-camera state in the simulator).
     var usesCamera = false
 
@@ -213,7 +215,7 @@ struct DemoScenario {
         switch name {
         case "home", "play":
             return DemoScenario(name: name, screen: .home)
-        case "live", "picker", "framing":
+        case "live", "picker", "framing", "remote":
             // Alex on 170 throws T20 T20 → 50 left, bull to finish.
             var scenario = DemoScenario(name: name)
             scenario.history = [
@@ -225,6 +227,7 @@ struct DemoScenario {
                                      DemoDetectionSource.dart(.triple(20), confidence: 0.81, offset: -0.5)]
             if name == "picker" { scenario.openPickerSlot = 1 }
             if name == "framing" { scenario.expandCamera = true }
+            if name == "remote" { scenario.openRemote = true }
             return scenario
         case "route":
             // Alex on 141, nothing thrown yet: T20 T19 D12.
