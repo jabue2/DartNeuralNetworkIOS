@@ -15,6 +15,8 @@ struct GameView: View {
     @State private var cameraExpanded = false
     @State private var confirmLeave = false
     @State private var showingRemote = false
+    /// The confirmation of the last mistake report, shown for a few seconds.
+    @State private var reportToast: MistakeReportResult?
 
     private var match: X01Match { session.match }
 
@@ -25,7 +27,8 @@ struct GameView: View {
             if match.isOver {
                 MatchSummaryView(match: match,
                                  onRematch: { withAnimation(.snappy) { session.rematch() } },
-                                 onDone: onExit)
+                                 onDone: onExit,
+                                 onReport: { session.reportMistake(from: "phone") })
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
                 playing
@@ -39,6 +42,20 @@ struct GameView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
                 .zIndex(2)
             }
+        }
+        .overlay(alignment: .top) {
+            if let reportToast {
+                ReportToast(result: reportToast)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .task(id: session.lastReport?.id) {
+            guard let report = session.lastReport else { return }
+            withAnimation(.snappy) { reportToast = report }
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            withAnimation(.snappy) { if reportToast?.id == report.id { reportToast = nil } }
         }
         .animation(.snappy, value: match.isOver)
         // Detection needs the camera running; the summary screen may let the phone sleep.
@@ -125,6 +142,8 @@ struct GameView: View {
             .frame(height: 44)
 
             Spacer(minLength: 0)
+
+            ReportMistakeButton { session.reportMistake(from: "phone") }
 
             if let remote {
                 RemoteButton(remote: remote) { showingRemote = true }
@@ -297,6 +316,43 @@ struct GameView: View {
             }
         }
         .animation(.snappy, value: visitDone)
+    }
+}
+
+/// "Report a mistake": saves the last seconds of what the camera saw and the game, for checking
+/// why a dart was scored wrong (see `MistakeReports`).
+struct ReportMistakeButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "exclamationmark.bubble")
+        }
+        .buttonStyle(RoundIconButtonStyle())
+        .accessibilityLabel("Report a mistake")
+        .accessibilityHint("Saves the last seconds of the camera and the game for checking")
+    }
+}
+
+private struct ReportToast: View {
+    let result: MistakeReportResult
+
+    var body: some View {
+        Label {
+            Text(result.message)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: result.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(result.failed ? Theme.danger : Theme.accent)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .accessibilityElement(children: .combine)
     }
 }
 

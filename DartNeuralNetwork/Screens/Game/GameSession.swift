@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 /// Connects a detection source to an X01 match and exposes the actions of the game screen.
@@ -12,6 +13,14 @@ final class GameSession: ObservableObject, Identifiable {
     private var visitAwaitingRemoval: UUID?
     /// Changes with every new leg (rematch), so a stale edit from another screen is not applied to it.
     private(set) var legID = UUID()
+    /// What happened in the game (darts, corrections, Next, Undo), for mistake reports.
+    private(set) var log: [MistakeReports.GameFile.LogLine] = []
+    static let logLimit = 500
+    /// The last "Report a mistake", for the confirmation on the phone and the web page.
+    @Published private(set) var lastReport: MistakeReportResult?
+    @Published private(set) var reportsSaved = 0
+    /// Where reports are saved; tests use a temporary folder.
+    var reportsRoot = MistakeReports.defaultRoot
 
     init(match: X01Match, source: DartDetectionSource) {
         self.match = match
@@ -38,12 +47,16 @@ final class GameSession: ObservableObject, Identifiable {
 
     /// Enters a dart by hand into the next empty slot.
     func enter(_ segment: Segment) {
+        note("by hand: \(segment.label) as dart \((match.activeVisit?.darts.count ?? 0) + 1)")
         let outcome = match.add(Dart(segment: segment))
         Haptics.tap()
         afterDart(outcome)
     }
 
     func correct(dartID: UUID, to segment: Segment) {
+        if let darts = match.activeVisit?.darts, let i = darts.firstIndex(where: { $0.id == dartID }) {
+            note("corrected dart \(i + 1): \(darts[i].segment.label) → \(segment.label)")
+        }
         guard let outcome = match.replaceDart(id: dartID, with: segment) else { return }
         Haptics.tap()
         if outcome == .open { resumeDetectionIfReopened() } else { afterDart(outcome) }
@@ -67,6 +80,7 @@ final class GameSession: ObservableObject, Identifiable {
     /// Ends the visit (or finishes the leg after a checkout).
     func next() {
         guard !match.isOver else { return }
+        note("next")
         let finishing = match.activeOutcome == .checkout
         match.endVisit()
         visitAwaitingRemoval = match.visits.last?.id
@@ -76,6 +90,7 @@ final class GameSession: ObservableObject, Identifiable {
 
     func undo() {
         guard match.canUndo else { return }
+        note("undo")
         let undone = match.visits.last?.id
         match.undo()
         Haptics.tap()
@@ -90,10 +105,44 @@ final class GameSession: ObservableObject, Identifiable {
     }
 
     func rematch() {
+        note("rematch")
         match = X01Match(rules: match.rules, players: match.players)
         legID = UUID()
         visitAwaitingRemoval = nil
         source.reset()
+    }
+
+    // MARK: Mistake reports
+
+    /// Saves the game and the detector's last seconds for checking on a Mac (see `MistakeReports`).
+    func reportMistake(from origin: String) {
+        let time = CACurrentMediaTime(), date = Date()
+        note("report a mistake (\(origin))")
+        let folder: URL
+        do {
+            folder = try MistakeReports.newFolder(in: reportsRoot, origin: origin, date: date)
+            let file = MistakeReports.gameFile(match: match, log: log, origin: origin, time: time, date: date)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(file).write(to: folder.appendingPathComponent("game.json"))
+        } catch {
+            print("Saving a mistake report failed: \(error)")
+            lastReport = MistakeReportResult(origin: origin, images: nil, failed: true)
+            Haptics.bust()
+            return
+        }
+        Haptics.success()
+        Task {
+            let summary = await source.saveRecording(into: folder)
+            reportsSaved += 1
+            lastReport = MistakeReportResult(origin: origin, images: summary?.images, failed: false)
+        }
+    }
+
+    /// Adds a line to the game log.
+    func note(_ text: String) {
+        log.append(.init(time: CACurrentMediaTime(), text: text))
+        if log.count > Self.logLimit { log.removeFirst(log.count - Self.logLimit) }
     }
 
     /// Undo or a correction turned the visit the detector closed back into an open one.
@@ -108,18 +157,26 @@ final class GameSession: ObservableObject, Identifiable {
     private func handle(_ event: DetectionEvent) {
         switch event {
         case .status(let status):
+            if status != boardStatus { note("board \(ScoreboardSnapshot.name(of: status))") }
             boardStatus = status
         case .dartDetected(let detected):
-            guard !match.isOver, match.activeOutcome != .checkout else { return }
+            guard !match.isOver, match.activeOutcome != .checkout else {
+                note("camera: \(detected.segment.label) ignored (leg finished)")
+                return
+            }
+            note(String(format: "camera: %@ (%.2f) as dart %d", detected.segment.label, detected.confidence,
+                        (match.activeVisit?.darts.count ?? 0) + 1))
             let outcome = match.add(detected.asDart)
             Haptics.dart()
             afterDart(outcome)
         case .visitEnded:
+            note("camera: visit ended (darts pulled)")
             // The detector closed the visit itself; its darts get pulled next.
             if visitAwaitingRemoval == nil, let active = match.activeVisit, !active.darts.isEmpty {
                 visitAwaitingRemoval = active.id
             }
         case .boardCleared:
+            note("camera: board cleared")
             // Darts pulled: move on, unless the leg was just won (that waits for a tap).
             // Only the visit the detector closed can be ended this way.
             let awaited = visitAwaitingRemoval

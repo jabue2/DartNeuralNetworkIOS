@@ -57,6 +57,14 @@ struct ScoreboardSnapshot: Codable, Equatable {
         var winner: Int?
         /// Confirmed visits, newest first (at most `recentLimit`).
         var recent: [VisitInfo]
+        /// The last "Report a mistake"; the page confirms it when `id` changes.
+        var report: ReportInfo? = nil
+    }
+
+    struct ReportInfo: Codable, Equatable {
+        var id: String
+        var message: String
+        var failed: Bool
     }
 
     var game: Game?
@@ -150,7 +158,7 @@ struct ScoreboardSnapshot: Codable, Equatable {
 /// every action names the leg it was meant for (`Game.leg`); `set` and `next` also name the visit
 /// (`Game.visitNumber`), so a stale or repeated click does nothing:
 /// `{"type":"set","leg":"…","visit":7,"slot":1,"segment":"T20"}`, `{"type":"next","leg":"…","visit":7}`,
-/// `{"type":"undo","leg":"…"}`, `{"type":"rematch","leg":"…"}`.
+/// `{"type":"undo","leg":"…"}`, `{"type":"rematch","leg":"…"}`, `{"type":"report","leg":"…"}`.
 struct ScoreboardAction: Equatable {
     enum Kind: Equatable {
         /// Sets dart `slot` (0...2) of the visit.
@@ -159,6 +167,8 @@ struct ScoreboardAction: Equatable {
         case undo
         /// Only after the leg is won, so a stray click cannot wipe a game in progress.
         case rematch
+        /// "Report a mistake": saves the game and the detector's last seconds.
+        case report
     }
     var kind: Kind
     var leg: String
@@ -189,6 +199,7 @@ struct ScoreboardAction: Equatable {
             kind = .next
         case "undo": kind = .undo
         case "rematch": kind = .rematch
+        case "report": kind = .report
         default: throw DecodeError.invalid
         }
         self.leg = leg
@@ -199,7 +210,11 @@ struct ScoreboardAction: Equatable {
 extension GameSession {
     /// The game as the web scoreboard sees it.
     var scoreboardSnapshot: ScoreboardSnapshot {
-        ScoreboardSnapshot(match: match, leg: legID.uuidString, visitNumber: currentVisitNumber, board: boardStatus)
+        var snapshot = ScoreboardSnapshot(match: match, leg: legID.uuidString, visitNumber: currentVisitNumber, board: boardStatus)
+        snapshot.game?.report = lastReport.map {
+            .init(id: $0.id.uuidString, message: $0.message, failed: $0.failed)
+        }
+        return snapshot
     }
 
     /// Applies a change from the web scoreboard with the same rules as the buttons on the phone.
@@ -208,14 +223,19 @@ extension GameSession {
         switch action.kind {
         case let .set(slot, segment):
             guard let visit = action.visit else { return }
+            note("web: set dart \(slot + 1) to \(segment.label)")
             set(slot: slot, ofVisit: visit, to: segment)
         case .next:
             guard action.visit == currentVisitNumber else { return }   // a repeated click
+            note("web: next")
             next()
         case .undo:
+            note("web: undo")
             undo()
         case .rematch:
             if match.isOver { rematch() }
+        case .report:
+            reportMistake(from: "web")
         }
     }
 }

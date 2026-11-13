@@ -27,24 +27,25 @@ import simd
 /// - **Misses.** Tips outside the double ring are never reported (`maxDartRadiusMM`). When the
 ///   darts of a visit with fewer than three are pulled (`pullFramesNeeded`), the tracker ends the
 ///   visit itself (`.visitEnded`, `.boardCleared`); the game counts the empty slots as misses.
-struct MultiFrameTracker {
+/// Codable so a mistake report can store a checkpoint of its whole state (`DetectorRecorder`).
+struct MultiFrameTracker: Codable {
     typealias Tuning = DetectorTuning
 
-    struct ConfirmedDart: Equatable {
+    struct ConfirmedDart: Equatable, Codable {
         let id: Int
         var boardMM: SIMD2<Double>
         var segment: Segment
         var confidence: Double
     }
 
-    struct Observation: Equatable {
+    struct Observation: Equatable, Codable {
         var boardMM: SIMD2<Double>
         var confidence: Double
         /// `usableFrameCount` when seen.
         var frame: Int
     }
 
-    struct Track: Equatable {
+    struct Track: Equatable, Codable {
         let id: Int
         var observations: [Observation]
         let firstFrame: Int
@@ -64,7 +65,7 @@ struct MultiFrameTracker {
         }
     }
 
-    enum Phase: Equatable {
+    enum Phase: Equatable, Codable {
         /// New darts are reported.
         case throwing
         /// `endVisit()` closed the visit; waiting for its darts to be pulled.
@@ -77,7 +78,7 @@ struct MultiFrameTracker {
     }
 
     /// How the last frame was used.
-    enum FrameUse: Equatable {
+    enum FrameUse: Equatable, Codable {
         case forming(streak: Int)
         case usable(clearView: Bool)
         case occluded
@@ -86,7 +87,7 @@ struct MultiFrameTracker {
     }
 
     /// A calibration point of the last frame and whether it agreed with the lock.
-    struct CalibrationReport: Equatable {
+    struct CalibrationReport: Equatable, Codable {
         var classIndex: Int
         var pixel: SIMD2<Double>
         var agrees: Bool
@@ -136,7 +137,11 @@ struct MultiFrameTracker {
     private var removalStreak = 0
     /// Clear views in a row without any of the open visit's darts (see `pullFramesNeeded`).
     private var pullStreak = 0
-    private var removedDarts: [(boardMM: SIMD2<Double>, until: Int)] = []
+    struct RemovedDart: Equatable, Codable {
+        var boardMM: SIMD2<Double>
+        var until: Int
+    }
+    private var removedDarts: [RemovedDart] = []
     private var nextID = 1
     /// Darts already in the board when the detector starts are background (see `startupBaselineFrames`).
     private let ignoresDartsAtStart: Bool
@@ -543,7 +548,7 @@ struct MultiFrameTracker {
     private mutating func finishRemoval() -> [DetectionEvent] {
         let wasClosed = phase == .awaitingRemoval
         let until = usableFrameCount + Tuning.removedMemoryFrames
-        removedDarts += oldDarts.map { ($0.boardMM, until) }
+        removedDarts += oldDarts.map { RemovedDart(boardMM: $0.boardMM, until: until) }
         oldDarts = []
         removalStreak = 0
         guard phase != .throwing else { return [] }   // a reopened visit's older darts were pulled: nothing to report
@@ -558,7 +563,7 @@ struct MultiFrameTracker {
     /// detected now was there before the next throw and is never reported.
     private mutating func finishPull() -> [DetectionEvent] {
         let until = usableFrameCount + Tuning.removedMemoryFrames
-        removedDarts += (resumedDarts + visitDarts).map { ($0.boardMM, until) }
+        removedDarts += (resumedDarts + visitDarts).map { RemovedDart(boardMM: $0.boardMM, until: until) }
         visitDarts = []
         resumedDarts = []
         pullStreak = 0

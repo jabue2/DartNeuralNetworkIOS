@@ -96,6 +96,12 @@ final class RFDetrDetectionSource: DartDetectionSource {
     func reset() { generation += 1; engine.reset(generation: generation) }
     func makePreviewView() -> UIView { previewHost }
 
+    func saveRecording(into folder: URL) async -> DetectorRecorder.Summary? {
+        await withCheckedContinuation { continuation in
+            engine.saveRecording(to: folder) { continuation.resume(returning: $0) }
+        }
+    }
+
     private func apply(_ output: DetectionEngine.Output) {
         for event in output.events {
             if case .status(let next) = event {

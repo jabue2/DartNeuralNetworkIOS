@@ -8,7 +8,7 @@ import UIKit
 // in `X01Match`, not in the detector.
 
 /// How well the camera currently sees the board.
-enum BoardStatus: Equatable {
+enum BoardStatus: Equatable, Codable {
     /// No camera, or camera access denied.
     case cameraUnavailable
     /// The camera runs, but the dart detector could not start (its model failed to load), so
@@ -74,10 +74,14 @@ protocol DartDetectionSource: AnyObject {
     /// What the detector sees, for the debug view on the framing screen. Nil when the source
     /// has nothing to show (demo, tests).
     var debugModel: DetectorDebugModel? { get }
+    /// Saves what the detector saw in the last seconds into `folder` (see `DetectorRecorder`).
+    /// Nil when the source records nothing (demo, tests) or saving failed.
+    func saveRecording(into folder: URL) async -> DetectorRecorder.Summary?
 }
 
 extension DartDetectionSource {
     var debugModel: DetectorDebugModel? { nil }
+    func saveRecording(into folder: URL) async -> DetectorRecorder.Summary? { nil }
 }
 
 enum DetectionSourceFactory {

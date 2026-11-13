@@ -5,6 +5,8 @@ struct MatchSummaryView: View {
     let match: X01Match
     var onRematch: () -> Void
     var onDone: () -> Void
+    /// "Report a mistake" (a wrong dart can end the leg); nil hides the button.
+    var onReport: (() -> Void)? = nil
 
     var body: some View {
         let winner = match.winnerIndex ?? 0
@@ -15,6 +17,9 @@ struct MatchSummaryView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack {
                         Spacer()
+                        if let onReport {
+                            ReportMistakeButton(action: onReport)
+                        }
                         Button(action: onDone) { Image(systemName: "xmark") }
                             .buttonStyle(RoundIconButtonStyle())
                             .accessibilityLabel("Close")

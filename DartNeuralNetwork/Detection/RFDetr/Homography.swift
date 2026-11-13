@@ -203,3 +203,24 @@ struct Homography: Equatable {
         return x.allSatisfy(\.isFinite) ? x : nil
     }
 }
+
+extension Homography: Codable {
+    /// Nine row-major entries.
+    var rows: [Double] {
+        let t = matrix.transpose   // the columns of the transpose are the rows
+        return [t.columns.0, t.columns.1, t.columns.2].flatMap { [$0.x, $0.y, $0.z] }
+    }
+
+    init(from decoder: Decoder) throws {
+        let entries = try decoder.singleValueContainer().decode([Double].self)
+        guard entries.count == 9 else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "A homography has 9 entries"))
+        }
+        self.init(rows: entries)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rows)
+    }
+}

@@ -152,8 +152,13 @@ td { font: 800 26px/1 var(--num); }
 th:first-child, td:first-child { text-align: left; }
 td:first-child { font: 600 17px/1.2 var(--text); }
 .summary .actions { max-width: 420px; }
+.summary .report { align-self: flex-start; margin-left: -16px; }
 
 .keys { color: var(--faint); font-size: 13px; text-align: center; }
+.report { align-self: center; min-height: 44px; padding: 0 16px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; background: transparent; }
+.report:not(:disabled):hover { background: var(--raised); color: var(--ink); }
+.report:disabled { opacity: .4; }
+.report svg { width: 18px; height: 18px; flex: none; }
 .keys kbd { font: 600 12px var(--text); padding: 2px 6px; border-radius: 5px; background: var(--raised); color: var(--muted); }
 @media (pointer: coarse), (max-width: 899px) { .keys { display: none; } }
 
@@ -205,6 +210,7 @@ const ICON = {
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   trophy: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M7 3h10v2h3v3a4 4 0 0 1-4 4h-.3A5 5 0 0 1 13 14.9V18h3v3H8v-3h3v-3.1A5 5 0 0 1 8.3 12H8a4 4 0 0 1-4-4V5h3V3Zm0 4H6v1a2 2 0 0 0 1 1.7V7Zm10 0v2.7A2 2 0 0 0 18 8V7h-1Z"/></svg>',
+  report: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.8 7L4 20l1.1-4.6A8 8 0 1 1 21 12Z"/><path d="M12 8v4"/><path d="M12 15.5v.01"/></svg>',
   flag: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 4h12l-2 4 2 4H5"/></svg>'
 };
 
@@ -214,6 +220,7 @@ let linkInvalid = false;
 let source = null;
 let picker = null;        // { slot, visit, current, ring, typed }
 let busy = false;
+let lastReport = undefined;   // id of the last report seen; undefined until the first snapshot
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -225,7 +232,14 @@ function connect() {
   if (source) source.close();
   source = new EventSource(base + "/events");
   source.onopen = () => { live = true; linkInvalid = false; render(); };
-  source.onmessage = e => { snap = JSON.parse(e.data); live = true; render(); };
+  source.onmessage = e => {
+    snap = JSON.parse(e.data); live = true; render();
+    // Confirm a report (from this page or the phone) once the phone has saved it.
+    const report = snap.game && snap.game.report;
+    const id = report ? report.id : null;
+    if (lastReport !== undefined && id && id !== lastReport) flash(report.message);
+    if (snap.game) lastReport = id;
+  };
   source.onerror = () => {
     live = false;
     render();
@@ -348,7 +362,8 @@ function playing(g) {
         <button class="btn round" data-act="undo" ${g.canUndo && live ? "" : "disabled"} aria-label="Undo">${ICON.undo}</button>
         <button class="btn grow${done ? " primary" : ""}" data-act="next" ${live ? "" : "disabled"}>${nextLabel}${ICON.arrow}</button>
       </div>
-      <div class="keys"><kbd>Enter</kbd> next &nbsp; <kbd>U</kbd> undo &nbsp; <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> edit dart</div>
+      ${reportButton()}
+      <div class="keys"><kbd>Enter</kbd> next &nbsp; <kbd>U</kbd> undo &nbsp; <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> edit dart &nbsp; <kbd>R</kbd> report a mistake</div>
     </section>
     <aside class="side">
       <section class="card"><h2>Players</h2><div class="players">${players(g)}</div></section>
@@ -389,8 +404,12 @@ function summary(g) {
     <div><div class="won">${ICON.trophy}Leg won</div><h1 class="winner">${esc(w.name)}</h1><div class="outon">${out}</div></div>
     <div class="table-wrap"><table><thead><tr><th>Player</th><th>3-dart avg</th><th>Best</th><th>180s</th><th>Darts</th><th>Checkout</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="actions"><button class="btn grow primary" data-act="rematch" ${live ? "" : "disabled"}>Rematch</button></div>
+    ${reportButton()}
   </section></main>`;
 }
+
+const reportButton = () =>
+  `<button class="report" data-act="report" ${live ? "" : "disabled"} title="Saves the last seconds of the camera on the phone, to check why a dart was scored wrong">${ICON.report}Report a mistake</button>`;
 
 let lastAnnounced = "";
 function announce(g) {
@@ -495,6 +514,8 @@ document.addEventListener("keydown", e => {
     send({ type: "next" });
   } else if (k.toLowerCase() === "u" && g.winner == null) {
     send({ type: "undo" });
+  } else if (k.toLowerCase() === "r") {
+    send({ type: "report" });
   } else if (/^[123]$/.test(k) && g.winner == null) {
     openSlot(Number(k) - 1);
   }

@@ -206,8 +206,7 @@ final class RFDetrModel {
     /// Runs the model on `crop` (the whole frame when nil) and returns merged detections at
     /// `DetectorTuning.decodeFloor` or more, in pixels of the upright frame.
     func detect(in frame: FrameImage, crop: CGRect? = nil) throws -> [ModelDetection] {
-        let full = CGRect(origin: .zero, size: frame.size)
-        let region = crop.map { $0.intersection(full).integral } ?? full
+        let region = Self.inputRegion(crop: crop, frameSize: frame.size)
         ModelInputWriter.write(frame, crop: region, into: input)
         let output = try model.prediction(from: provider)
         guard let (boxes, logits) = Self.outputs(output) else { throw CocoaError(.coderValueNotFound) }
@@ -218,6 +217,12 @@ final class RFDetrModel {
                             Double(region.minY) + d.point.y * Double(region.height))
             return d
         }
+    }
+
+    /// The part of the frame the model looks at for `crop` (the whole frame when nil).
+    static func inputRegion(crop: CGRect?, frameSize: CGSize) -> CGRect {
+        let full = CGRect(origin: .zero, size: frameSize)
+        return crop.map { $0.intersection(full).integral } ?? full
     }
 
     /// The box and logit outputs, found by their last dimension (4 and 14) like the Python check.

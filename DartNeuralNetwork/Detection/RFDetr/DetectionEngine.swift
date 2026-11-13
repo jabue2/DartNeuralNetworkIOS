@@ -57,11 +57,21 @@ final class DetectionEngine: @unchecked Sendable {
     private var lastFrameTime: CFTimeInterval = 0
     private var framesPerSecond = 0.0
     private var debugEnabled = false
+    /// The last seconds of frames, detections and commands, for reporting a mistake.
+    let recorder: DetectorRecorder
 
     /// `loadModel` is replaceable for tests.
-    init(ignoresDartsAtStart: Bool, loadModel: @escaping () throws -> RFDetrModel = { try RFDetrModel.loadBundled() }) {
+    /// Seconds (frame time) between tracker checkpoints in the recording; see `DetectorRecorder`.
+    private let checkpointSeconds: Double
+    private var lastCheckpointTime: CFTimeInterval?
+
+    init(ignoresDartsAtStart: Bool, recorder: DetectorRecorder = DetectorRecorder(), checkpointSeconds: Double = 30,
+         loadModel: @escaping () throws -> RFDetrModel = { try RFDetrModel.loadBundled() }) {
         tracker = MultiFrameTracker(ignoresDartsAtStart: ignoresDartsAtStart)
+        self.recorder = recorder
+        self.checkpointSeconds = checkpointSeconds
         self.loadModel = loadModel
+        recorder.record(checkpoint: tracker)   // the start: a replay of a log not yet trimmed starts here
     }
 
     /// Loads the model in the background so the first frame does not wait for it.
@@ -79,10 +89,22 @@ final class DetectionEngine: @unchecked Sendable {
 
     // Commands from the game. Each carries the source's new generation: outputs produced before
     // the command ran carry an older one, so the source can drop their darts and clears.
-    func endVisit(generation: Int) { queue.async { self.generation = generation; self.tracker.endVisit() } }
-    func resumeVisit(generation: Int) { queue.async { self.generation = generation; self.tracker.resumeVisit() } }
-    func reset(generation: Int) { queue.async { self.generation = generation; self.tracker.reset() } }
-    func cameraStopped() { queue.async { self.tracker.cameraRestarted() } }
+    func endVisit(generation: Int) {
+        queue.async { self.generation = generation; self.tracker.endVisit(); self.recorder.record(command: "endVisit") }
+    }
+    func resumeVisit(generation: Int) {
+        queue.async { self.generation = generation; self.tracker.resumeVisit(); self.recorder.record(command: "resumeVisit") }
+    }
+    func reset(generation: Int) {
+        queue.async { self.generation = generation; self.tracker.reset(); self.recorder.record(command: "reset") }
+    }
+    func cameraStopped() { queue.async { self.tracker.cameraRestarted(); self.recorder.record(command: "cameraStopped") } }
+
+    /// Saves the recording of the last seconds into `folder`, including every frame processed
+    /// before this call. `completion` runs on the recorder's queue.
+    func saveRecording(to folder: URL, completion: @escaping (DetectorRecorder.Summary?) -> Void) {
+        queue.async { self.recorder.save(to: folder, completion: completion) }
+    }
     func setDebugEnabled(_ enabled: Bool) { queue.async { self.debugEnabled = enabled } }
 
     /// Processes a frame. Must be called on `queue`; skips frames beyond `maxFramesPerSecond`.
@@ -101,7 +123,14 @@ final class DetectionEngine: @unchecked Sendable {
         guard let detections = try? model.detect(in: frame, crop: crop) else { return }
         let milliseconds = (CACurrentMediaTime() - started) * 1000
         let observation = FrameObservation(imageSize: frame.size, crop: crop, detections: detections)
+        if let last = lastCheckpointTime, time >= last, time - last < checkpointSeconds {
+            // Not yet due.
+        } else {
+            lastCheckpointTime = time
+            recorder.record(checkpoint: tracker, time: time)
+        }
         let events = tracker.process(observation)
+        record(observation, events: events, milliseconds: milliseconds, time: time, image: frame)
         let snapshot = debugEnabled ? makeSnapshot(observation, milliseconds: milliseconds) : nil
         if !events.isEmpty || snapshot != nil { output?(Output(events: events, snapshot: snapshot, generation: generation)) }
     }
@@ -129,6 +158,29 @@ final class DetectionEngine: @unchecked Sendable {
             output?(Output(events: [.status(.detectorUnavailable)], snapshot: nil, generation: generation))
         }
         return model
+    }
+
+    private func record(_ frame: FrameObservation, events: [DetectionEvent], milliseconds: Double,
+                        time: CFTimeInterval, image: FrameImage) {
+        func darts(_ list: [MultiFrameTracker.ConfirmedDart]) -> [DetectorRecorder.TrackedDart] {
+            list.map { .init(label: $0.segment.label, x: $0.boardMM.x, y: $0.boardMM.y) }
+        }
+        let h = tracker.homography?.rows
+        let region = RFDetrModel.inputRegion(crop: frame.crop, frameSize: frame.imageSize)
+        let entry = DetectorRecorder.Frame(
+            width: frame.imageSize.width, height: frame.imageSize.height,
+            crop: [region.minX, region.minY, region.width, region.height],
+            detections: frame.detections.map { .init(c: $0.classIndex, x: $0.point.x, y: $0.point.y, p: $0.confidence) },
+            events: events.map(DetectorRecorder.describe),
+            phase: DetectorRecorder.name(of: tracker.phase),
+            use: DetectorRecorder.name(of: tracker.lastFrameUse),
+            status: ScoreboardSnapshot.name(of: tracker.status),
+            homography: h,
+            visitDarts: darts(tracker.resumedDarts + tracker.visitDarts),
+            oldDarts: darts(tracker.oldDarts),
+            inferenceMilliseconds: milliseconds,
+            image: false)
+        recorder.record(frame: entry, time: time, image: (image, region))
     }
 
     private func makeSnapshot(_ frame: FrameObservation, milliseconds: Double) -> DetectorSnapshot {
