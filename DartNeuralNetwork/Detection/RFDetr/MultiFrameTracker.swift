@@ -36,6 +36,24 @@ struct MultiFrameTracker: Codable {
         var boardMM: SIMD2<Double>
         var segment: Segment
         var confidence: Double
+        /// Usable frame its track first appeared in, when the camera saw it arrive (see
+        /// `sameLandingFrames`). Nil otherwise, and in checkpoints saved before it existed.
+        var firstFrame: Int? = nil
+        /// Where points on its barrel were seen (tracks that appeared with it); weak detections
+        /// there belong to it (see `barrelAbsorbConfidence`).
+        var barrelMM: [SIMD2<Double>]? = nil
+
+        /// A detection at its tip: this dart is still in the board.
+        func coversTip(_ p: SIMD2<Double>) -> Bool {
+            simd_distance(boardMM, p) <= Tuning.confirmedDartRadiusMM
+        }
+
+        /// A weak detection on its barrel: never a new dart, but no evidence that this dart is
+        /// still there either (removal and pull use the tip only).
+        func coversBarrel(_ p: SIMD2<Double>, confidence: Double) -> Bool {
+            confidence < Tuning.barrelAbsorbConfidence
+                && (barrelMM ?? []).contains { simd_distance($0, p) <= Tuning.barrelAbsorbRadiusMM }
+        }
     }
 
     struct Observation: Equatable, Codable {
@@ -55,6 +73,9 @@ struct MultiFrameTracker: Codable {
         /// Appeared next to a dart pulled moments ago (see `removedMemoryFrames`): does not
         /// confirm up to and including this usable frame, then counts as a normal track again.
         var suppressedUntil: Int? = nil
+        /// Appeared after `arrivalClearFrames` clear views in a row: the camera saw it arrive
+        /// rather than being uncovered (see `sameLandingFrames`). Nil in checkpoints saved before it existed.
+        var seenArriving: Bool? = nil
 
         /// Does not confirm now (background, or still suppressed).
         var isHeldBack: Bool { isBackground || suppressedUntil != nil }
@@ -143,6 +164,8 @@ struct MultiFrameTracker: Codable {
     }
     private var removedDarts: [RemovedDart] = []
     private var nextID = 1
+    /// Clear views in a row up to the last processed frame (see `Track.seenArriving`).
+    private var clearViewStreak: Int?
     /// Darts already in the board when the detector starts are background (see `startupBaselineFrames`).
     private let ignoresDartsAtStart: Bool
 
@@ -217,6 +240,7 @@ struct MultiFrameTracker: Codable {
             usableFrameCount += 1
             events += updateDarts(frame, homography: h, clearView: clearView)
         }
+        clearViewStreak = use == .usable(clearView: true) ? (clearViewStreak ?? 0) + 1 : 0
         return events
     }
 
@@ -406,20 +430,29 @@ struct MultiFrameTracker: Codable {
 
         // 1. Detections near darts already reported belong to them.
         let openVisit = visitDarts + resumedDarts
-        func nearOpenVisit(_ p: SIMD2<Double>) -> Bool {
-            openVisit.contains { simd_distance($0.boardMM, p) <= Tuning.confirmedDartRadiusMM }
-        }
+        func nearOpenVisit(_ p: SIMD2<Double>) -> Bool { openVisit.contains { $0.coversTip(p) } }
         // For the pull, any decoded detection of a visit dart, however faint, means it is still there.
         let visitDartSeen = !openVisit.isEmpty && frame.darts(minConfidence: Tuning.decodeFloor)
             .contains { h.apply($0.point).map(nearOpenVisit) ?? false }
+        // A weak detection on a known barrel point is that dart's barrel, unless strong detections
+        // already started a candidate there: a new dart landing on that spot (strong for a few
+        // frames, where a barrel point only spikes now and then).
+        func onBarrel(_ o: Observation) -> Bool {
+            guard (openVisit + oldDarts).contains(where: { $0.coversBarrel(o.boardMM, confidence: o.confidence) }) else { return false }
+            return !tracks.contains { t in
+                !t.isHeldBack && simd_distance(t.tipMM, o.boardMM) <= Tuning.associationRadiusMM
+                    && t.observations.filter { $0.confidence >= Tuning.barrelAbsorbConfidence }.count >= Tuning.barrelEscapeHits
+            }
+        }
         var free: [Observation] = []
         var oldDartSeen = false
         for o in seen {
             if nearOpenVisit(o.boardMM) { continue }
-            if oldDarts.contains(where: { simd_distance($0.boardMM, o.boardMM) <= Tuning.confirmedDartRadiusMM }) {
+            if oldDarts.contains(where: { $0.coversTip(o.boardMM) }) {
                 oldDartSeen = true
                 continue
             }
+            if onBarrel(o) { continue }
             free.append(o)
         }
 
@@ -456,7 +489,8 @@ struct MultiFrameTracker: Codable {
                     .map(\.until).max()
                 let atStart = ignoresDartsAtStart && frameIndex <= Tuning.startupBaselineFrames
                 let track = Track(id: nextID, observations: [o], firstFrame: frameIndex, isBackground: atStart,
-                                  suppressedUntil: suppressedUntil)
+                                  suppressedUntil: suppressedUntil,
+                                  seenArriving: (clearViewStreak ?? 0) >= Tuning.arrivalClearFrames)
                 nextID += 1
                 tracks.append(track)
                 matched.insert(track.id)
@@ -498,6 +532,8 @@ struct MultiFrameTracker: Codable {
         let ready = tracks.filter { !$0.isHeldBack && isConfirmable($0) }
             .sorted { evidence(of: $0) > evidence(of: $1) }
         for track in ready where visitDarts.count < Tuning.maxDartsPerVisit {
+            // Became part of a dart confirmed earlier in this loop.
+            guard let current = tracks.first(where: { $0.id == track.id }), !current.isHeldBack else { continue }
             let tip = track.tipMM
             let segment = BoardGeometry.segment(at: BoardPoint(millimetres: tip))
             // Outside the double ring: a barrel or flight seen from a steep angle, or a real miss.
@@ -506,13 +542,36 @@ struct MultiFrameTracker: Codable {
             tracks.removeAll { $0.id == track.id }
             // Drifted onto a dart already reported: it is that dart.
             if (visitDarts + resumedDarts + oldDarts).contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM }) { continue }
-            let dart = ConfirmedDart(id: track.id, boardMM: tip, segment: segment,
-                                     confidence: track.observations.map(\.confidence).max() ?? 0)
+            // Appeared together with a dart already reported: a point on its barrel, not a new dart.
+            if let i = visitDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
+                visitDarts[i].barrelMM = (visitDarts[i].barrelMM ?? []) + [tip]
+                continue
+            }
+            if let i = resumedDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
+                resumedDarts[i].barrelMM = (resumedDarts[i].barrelMM ?? []) + [tip]
+                continue
+            }
+            var dart = ConfirmedDart(id: track.id, boardMM: tip, segment: segment,
+                                     confidence: track.observations.map(\.confidence).max() ?? 0,
+                                     firstFrame: track.seenArriving == true ? track.firstFrame : nil)
+            // The other tracks that appeared with it are its barrel: they never become darts.
+            let barrel = tracks.filter { Self.landedTogether($0, dart) }
+            dart.barrelMM = barrel.map(\.tipMM)
+            tracks.removeAll { t in barrel.contains { $0.id == t.id } }
             visitDarts.append(dart)
             events.append(.dartDetected(DetectedDart(segment: dart.segment, boardPosition: BoardPoint(millimetres: tip),
                                                      confidence: dart.confidence)))
         }
         return events
+    }
+
+    /// One dart lands at a time: a track that first appeared within `sameLandingFrames` of a
+    /// dart's track and within `sameLandingRadiusMM` of its tip is part of that dart (the model
+    /// also fires along the barrel of a dart that just landed, phone test 2026-11-13).
+    static func landedTogether(_ track: Track, _ dart: ConfirmedDart) -> Bool {
+        guard let landed = dart.firstFrame, track.seenArriving == true, track.id != dart.id else { return false }
+        return abs(track.firstFrame - landed) <= Tuning.sameLandingFrames
+            && simd_distance(track.tipMM, dart.boardMM) <= Tuning.sameLandingRadiusMM
     }
 
     /// An observation joins a track only on the same side of the outer double wire, unless both
@@ -536,7 +595,9 @@ struct MultiFrameTracker: Codable {
         let ratio = Double(window.count) / Double(min(age, Tuning.evidenceWindow))
         guard window.count >= Tuning.confirmMinHits,
               window.reduce(0, { $0 + $1.confidence }) >= Tuning.confirmEvidence,
-              ratio >= Tuning.confirmMinHitRatio else { return false }
+              ratio >= Tuning.confirmMinHitRatio,
+              track.observations.contains(where: { $0.confidence >= Tuning.confirmMinPeakConfidence })
+        else { return false }
         // Near a wire, wait for a few more frames before trusting the median.
         if track.observations.count < Tuning.wireExtraHits,
            BoardGeometry.distanceToNearestWireMM(BoardPoint(millimetres: track.tipMM)) < Tuning.wireMarginMM {

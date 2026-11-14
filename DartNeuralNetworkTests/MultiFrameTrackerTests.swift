@@ -111,12 +111,20 @@ final class MultiFrameTrackerTests: XCTestCase {
     func testPersistentLowConfidenceDartIsConfirmedOnce() {
         lock()
         let dart = Scene.Dart(mm: mm(.triple(20)), confidence: 0.12)
-        run(5, darts: [dart])
-        XCTAssertTrue(darts.isEmpty, "five frames at 0.12 are not enough evidence yet")
+        run(4, darts: [dart])
+        run(1, darts: [.init(mm: dart.mm, confidence: 0.32)])
+        XCTAssertTrue(darts.isEmpty, "five faint frames are not enough evidence yet")
         run(10, darts: [dart])
         XCTAssertEqual(darts.map(\.segment), [.triple(20)])
         run(40, darts: [dart])
         XCTAssertEqual(darts.count, 1, "a dart is reported once")
+    }
+
+    /// Phone reports: detections that never reach 0.3 were nearly always barrel points or phantoms.
+    func testADetectionThatStaysFaintNeverConfirms() {
+        lock()
+        run(60, darts: [.init(mm: mm(.single(17)), confidence: 0.2)])
+        XCTAssertTrue(darts.isEmpty)
     }
 
     func testStrongDartIsConfirmedWithinAFewFrames() {
@@ -169,9 +177,19 @@ final class MultiFrameTrackerTests: XCTestCase {
     func testAtMostThreeDartsPerVisit() {
         lock()
         let four: [Scene.Dart] = [.single(1), .single(2), .single(3), .single(4)].map { .init(mm: mm($0), confidence: 0.7) }
-        run(10, darts: four)
+        for n in 1...4 { run(20, darts: Array(four.prefix(n))) }   // thrown one after another
         XCTAssertEqual(darts.count, 3)
         XCTAssertEqual(tracker.tracks.count, 1, "the fourth dart stays a candidate")
+    }
+
+    /// Darts that appear together because a player stood in front of the board while they landed
+    /// all count: the camera did not see them arrive one by one.
+    func testDartsUncoveredTogetherAllCount() {
+        lock()
+        let three: [Scene.Dart] = [mm(.triple(20)), mm(.single(20)), mm(.single(1))].map { .init(mm: $0, confidence: 0.75) }
+        run(5, calibration: Set(0..<5))   // most of the board hidden
+        run(20, darts: three)
+        XCTAssertEqual(darts.count, 3)
     }
 
     func testDartsAlreadyInTheBoardAtStartAreIgnored() {
@@ -220,6 +238,7 @@ final class MultiFrameTrackerTests: XCTestCase {
 
     func testPullingTheDartsOfAShortVisitEndsIt() {
         lock()
+        run(5, darts: [.init(mm: mm(.triple(20)), confidence: 0.8)])
         run(5, darts: [.init(mm: mm(.triple(20)), confidence: 0.8), .init(mm: mm(.single(5)), confidence: 0.8)])
         XCTAssertEqual(darts.count, 2)
         // The third dart missed the board; the player pulls the two that scored.
@@ -246,7 +265,9 @@ final class MultiFrameTrackerTests: XCTestCase {
         lock()
         run(5, darts: [.init(mm: mm(.single(20)), confidence: 0.8)])
         let slow = Scene.Dart(mm: mm(.single(6)), confidence: 0.08)   // needs 13 frames to confirm
-        run(30, darts: [slow])
+        run(6, darts: [slow])
+        run(1, darts: [.init(mm: slow.mm, confidence: 0.3)])
+        run(23, darts: [slow])
         XCTAssertFalse(events.contains(.visitEnded))
         XCTAssertEqual(darts.map(\.segment), [.single(20), .single(6)])
     }
@@ -310,6 +331,7 @@ final class MultiFrameTrackerTests: XCTestCase {
     func testRemovalNeedsTheDartsAbsentFromCurrentFrames() {
         lock()
         let a = Scene.Dart(mm: mm(.single(20)), confidence: 0.7), b = Scene.Dart(mm: mm(.triple(1)), confidence: 0.7)
+        run(5, darts: [a])   // thrown one after the other
         run(5, darts: [a, b])
         XCTAssertEqual(darts.count, 2)
         tracker.endVisit()
@@ -353,6 +375,7 @@ final class MultiFrameTrackerTests: XCTestCase {
     func testResumeRestoresTheClosedVisit() {
         lock()
         let a = Scene.Dart(mm: mm(.single(20)), confidence: 0.7), b = Scene.Dart(mm: mm(.triple(5)), confidence: 0.7)
+        run(5, darts: [a])   // thrown one after the other
         run(5, darts: [a, b])
         XCTAssertEqual(darts.count, 2)
         tracker.endVisit()
@@ -504,5 +527,147 @@ final class MultiFrameTrackerTests: XCTestCase {
         XCTAssertEqual(darts.count, before, "maybe the old dart, hidden by a hand during the clear")
         run(50 - DetectorTuning.removedMemoryFrames + 1, darts: [again])
         XCTAssertEqual(darts.count, before + 1, "a new dart in the same bed must score")
+    }
+
+    // MARK: One landing, one dart
+
+    /// Locks and keeps a clear view long enough that new darts count as seen arriving.
+    private func lockAndWatch() {
+        lock()
+        run(DetectorTuning.arrivalClearFrames)
+    }
+
+    /// `p` moved `millimetres` away from the board centre (along a barrel seen from the side).
+    private func outward(_ p: SIMD2<Double>, _ millimetres: Double) -> SIMD2<Double> {
+        p + simd_normalize(p) * millimetres
+    }
+
+    /// The model also fires along the barrel of a dart that just landed. A barrel point that
+    /// appears with the tip and lasts is part of that dart (phone reports, 2026-11-13).
+    func testBarrelPointThatAppearsWithADartIsPartOfIt() {
+        lockAndWatch()
+        let tip = mm(.single(18), angle: -0.2)
+        run(20, darts: [.init(mm: tip, confidence: 0.75), .init(mm: outward(tip, 30), confidence: 0.3)])
+        XCTAssertEqual(darts.map(\.segment), [.single(18)])
+    }
+
+    /// The same when the barrel point is the stronger detection: still one dart, not two.
+    func testStrongerBarrelPointStillMakesOneDart() {
+        lockAndWatch()
+        let tip = mm(.single(2))
+        run(20, darts: [.init(mm: tip, confidence: 0.2), .init(mm: outward(tip, 20), confidence: 0.6)])
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// A second dart landing next to the first a couple of seconds later still counts.
+    func testADartLandingNextToAnotherLaterCounts() {
+        lockAndWatch()
+        let first = mm(.triple(20), angle: -0.2)
+        let second = first + SIMD2(14, 2)
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        run(20, darts: [.init(mm: first, confidence: 0.8), .init(mm: second, confidence: 0.75)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A barrel point that flickers away and back later still belongs to its dart.
+    func testFlickeringBarrelPointDoesNotComeBackAsADart() {
+        lockAndWatch()
+        let tip = mm(.single(2), angle: 0.1)
+        let barrel = outward(tip, 15)
+        run(12, darts: [.init(mm: tip, confidence: 0.7), .init(mm: barrel, confidence: 0.2)])
+        run(15, darts: [.init(mm: tip, confidence: 0.7)])                                   // forgotten as a track
+        run(30, darts: [.init(mm: tip, confidence: 0.7), .init(mm: barrel, confidence: 0.2)])   // and back
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// A strong detection on a barrel point is a new dart landing there.
+    func testNewDartOnABarrelPointCounts() {
+        lockAndWatch()
+        let tip = mm(.single(20), angle: -0.1)
+        let barrel = outward(tip, 18)
+        run(12, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.2)])
+        run(25, darts: [.init(mm: tip, confidence: 0.75)])
+        run(20, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.8)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A barrel point of a dart that landed after the first must not hide that new dart's tip.
+    func testBarrelOfTheSecondDartDoesNotCount() {
+        lockAndWatch()
+        let first = mm(.single(5))
+        let second = mm(.single(1), angle: 0.2)
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        run(20, darts: [.init(mm: first, confidence: 0.8), .init(mm: second, confidence: 0.75),
+                        .init(mm: outward(second, 25), confidence: 0.3)])
+        XCTAssertEqual(darts.map(\.segment), [.single(5), .single(1)])
+    }
+
+    /// Review: darts uncovered over two frames while the view recovers all count.
+    func testDartsUncoveredOneFrameApartAllCount() {
+        lockAndWatch()
+        let a = mm(.single(20)), b = mm(.triple(1), angle: 0.1), c = outward(b, 30)
+        run(5, calibration: Set(0..<5))   // a player in front of the board
+        run(1, darts: [.init(mm: a, confidence: 0.8)])
+        run(20, darts: [.init(mm: a, confidence: 0.8), .init(mm: b, confidence: 0.8), .init(mm: c, confidence: 0.4)])
+        XCTAssertEqual(darts.count, 3)
+    }
+
+    /// Review: a new dart on a remembered barrel point that is seen strongly as it lands, then
+    /// faintly, still counts.
+    func testNewDartOnABarrelPointThatTurnsFaintCounts() {
+        lockAndWatch()
+        let tip = mm(.single(20), angle: -0.1)
+        let barrel = outward(tip, 18)
+        run(12, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.2)])
+        run(25, darts: [.init(mm: tip, confidence: 0.75)])
+        run(2, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.8)])
+        run(20, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.2)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A barrel point that creeps up with lone spikes over 0.5 (phone report) stays a barrel.
+    func testBarrelPointWithLoneSpikesStaysABarrel() {
+        lockAndWatch()
+        let tip = mm(.single(18), angle: 0.1), barrel = outward(tip, 35)
+        run(10, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: 0.2)])
+        for i in 0..<60 {
+            run(1, darts: [.init(mm: tip, confidence: 0.75), .init(mm: barrel, confidence: i % 7 == 6 ? 0.56 : 0.35)])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review: a barrel point confirming after the visit was reopened stays that dart's barrel.
+    func testBarrelPointOfAResumedVisitIsRemembered() {
+        lockAndWatch()
+        let tip = mm(.single(3)), barrel = outward(tip, 20)
+        run(3, darts: [.init(mm: tip, confidence: 0.8)])
+        XCTAssertEqual(darts.count, 1)
+        tracker.endVisit()
+        run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: barrel, confidence: 0.35)])
+        tracker.resumeVisit()
+        run(10, darts: [.init(mm: tip, confidence: 0.8), .init(mm: barrel, confidence: 0.35)])
+        run(15, darts: [.init(mm: tip, confidence: 0.8)])
+        run(30, darts: [.init(mm: tip, confidence: 0.8), .init(mm: barrel, confidence: 0.35)])
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review: a faint detection left on a barrel point does not keep a pulled visit open or the
+    /// board from clearing.
+    func testBarrelPointDoesNotBlockThePullOrTheClear() {
+        lockAndWatch()
+        let tip = mm(.single(11)), barrel = outward(tip, 25)
+        run(10, darts: [.init(mm: tip, confidence: 0.8), .init(mm: barrel, confidence: 0.3)])
+        XCTAssertEqual(darts.count, 1)
+        run(DetectorTuning.pullFramesNeeded + 2, darts: [.init(mm: barrel, confidence: 0.06)])
+        XCTAssertTrue(events.contains(.visitEnded), "the short visit's dart was pulled")
+
+        // The next visit: a dart elsewhere, closed with Next, then pulled.
+        events = []
+        let tip2 = mm(.single(14), angle: 0.2), barrel2 = outward(tip2, 25)
+        run(10, darts: [.init(mm: tip2, confidence: 0.8), .init(mm: barrel2, confidence: 0.3)])
+        XCTAssertEqual(darts.count, 1)
+        tracker.endVisit()
+        run(DetectorTuning.removalFramesNeeded + 2, darts: [.init(mm: barrel2, confidence: 0.06)])
+        XCTAssertTrue(events.contains(.boardCleared))
     }
 }

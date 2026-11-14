@@ -27,10 +27,21 @@ enum DetectorLogReplay {
         var events: [[String]]
         /// Later checkpoints that differ from the replayed tracker state.
         var checkpointMismatches: Int
+        /// Recorded commands that were applied, in order.
+        var appliedCommands: [String] = []
     }
 
-    static func replay(_ file: DetectorLogFile) -> Result? {
+    /// - Parameters:
+    ///   - fullVisitTimes: With this, a visit ends when the replayed tracker reports its third dart
+    ///     (as the game does), and recorded `endVisit`s that followed the game's third dart (these
+    ///     times, from `game.json`) are skipped. Other commands (Next on a short visit, a bust,
+    ///     undo, rematch) are replayed as recorded.
+    static func replay(_ file: DetectorLogFile, fullVisitTimes: [Double]? = nil) -> Result? {
         guard var tracker = file.entries.first?.checkpoint else { return nil }
+        let simulateVisits = fullVisitTimes != nil
+        func followsFullVisit(_ time: Double) -> Bool {
+            (fullVisitTimes ?? []).contains { time - $0 >= 0 && time - $0 <= 1 }
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         var result = Result(events: [], checkpointMismatches: 0)
@@ -39,7 +50,13 @@ enum DetectorLogReplay {
                 if (try? encoder.encode(checkpoint)) != (try? encoder.encode(tracker)) { result.checkpointMismatches += 1 }
                 continue
             }
+            if let command = entry.command,
+               !(command == "endVisit" && simulateVisits && followsFullVisit(entry.time)) {
+                result.appliedCommands.append(command)
+            }
             switch entry.command {
+            case "endVisit" where simulateVisits && followsFullVisit(entry.time):
+                break   // the game's third dart ended it; the replay ends visits itself
             case "endVisit": tracker.endVisit()
             case "resumeVisit": tracker.resumeVisit()
             case "reset": tracker.reset()
@@ -53,6 +70,9 @@ enum DetectorLogReplay {
                 imageSize: size, crop: crop,
                 detections: frame.detections.map { ModelDetection(classIndex: $0.c, point: SIMD2($0.x, $0.y), confidence: $0.p) })
             result.events.append(tracker.process(observation).map(DetectorRecorder.describe))
+            if simulateVisits, tracker.phase == .throwing, tracker.visitDarts.count >= DetectorTuning.maxDartsPerVisit {
+                tracker.endVisit()
+            }
         }
         return result
     }
@@ -248,6 +268,21 @@ final class DetectorRecorderTests: XCTestCase {
         let replay = try XCTUnwrap(DetectorLogReplay.replay(file))
         XCTAssertEqual(replay.events, logged)
         XCTAssertEqual(replay.checkpointMismatches, 0)
+    }
+
+    /// Review: a recorded `endVisit` after a bust (the tracker had three darts, the game took one)
+    /// is replayed; one after the game's third dart is not.
+    func testReplayKeepsABustButNotAFullVisitsEndVisit() throws {
+        let three = (0..<3).map { DetectorRecorder.TrackedDart(label: "20", x: Double($0) * 30, y: -80) }
+        var full = frame()
+        full.visitDarts = three
+        let file = DetectorLogFile(modelInputSide: 800, entries: [
+            .init(seq: 0, time: 0, checkpoint: MultiFrameTracker()),
+            .init(seq: 1, time: 1, frame: full),
+            .init(seq: 2, time: 1.1, command: "endVisit"),
+        ])
+        XCTAssertEqual(try XCTUnwrap(DetectorLogReplay.replay(file, fullVisitTimes: [])).appliedCommands, ["endVisit"], "a bust")
+        XCTAssertEqual(try XCTUnwrap(DetectorLogReplay.replay(file, fullVisitTimes: [1.05])).appliedCommands, [], "a full visit")
     }
 }
 

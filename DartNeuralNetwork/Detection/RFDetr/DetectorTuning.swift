@@ -74,11 +74,16 @@ enum DetectorTuning {
     static let associationRadiusMM = 12.0
     /// A track becomes a dart when, within the last `evidenceWindow` usable frames, it was seen
     /// at least `confirmMinHits` times and its confidences add up to `confirmEvidence`.
-    /// One frame at 0.25 alone (the single-frame rule) is not enough; three frames at 0.34, or ten
-    /// at 0.1, are.
+    /// One frame at 0.25 alone (the single-frame rule) is not enough; three frames at 0.34 are,
+    /// and so are ten faint frames once one of them reached `confirmMinPeakConfidence`.
     static let evidenceWindow = 15
     static let confirmMinHits = 3
     static let confirmEvidence = 1.0
+    /// ...and it was seen at this confidence or more at least once. On the phone (21 mistake
+    /// reports, 2026-11-13), at least 9 of the 11 darts confirmed while never reaching 0.3 were wrong
+    /// (barrel points, phantoms), while real darts on that board mostly peaked at 0.6-0.87. A dart
+    /// only ever seen fainter is entered by hand.
+    static let confirmMinPeakConfidence = 0.3
     /// ...and it was seen in at least this share of the usable frames since it appeared, so a
     /// flickering low-confidence false detection does not confirm.
     static let confirmMinHitRatio = 0.6
@@ -109,6 +114,31 @@ enum DetectorTuning {
     /// within this distance of the wire (tip noise); farther apart they are different objects.
     static let ringJoinMarginMM = 1.5
     static let maxDartsPerVisit = 3
+    /// One landing, one dart. When a dart lands, the model often also fires weakly along its barrel
+    /// (13-36 mm from the tip in 9 phone reports, 2026-11-13); now and then such a point lasts long
+    /// enough to confirm as a second dart. Those points appear in the same frame as the real tip,
+    /// while separate darts appeared 2.3 s or more apart. So a track that appears within this many
+    /// usable frames of a reported dart's track, and within `sameLandingRadiusMM` of its tip, is
+    /// part of that dart and never reported. Only for tracks the camera saw arrive (after
+    /// `arrivalClearFrames` clear views): darts uncovered when a player steps away all count.
+    /// The radius is wide (barrel points lay 13-51 mm from the tip) because the timing is what
+    /// tells a barrel point from another dart.
+    static let sameLandingFrames = 3
+    static let sameLandingRadiusMM = 100.0
+    /// Clear views in a row before a new track counts as seen arriving; tracks that appear while
+    /// the view recovers (a player stepping away) were uncovered, not thrown, and all count.
+    static let arrivalClearFrames = 3
+    /// Detections weaker than this within `barrelAbsorbRadiusMM` of a barrel point belong to that
+    /// dart, so a flickering barrel point does not come back later as a new dart. Stronger ones
+    /// are a new dart landing there (real tips mostly scored 0.6-0.87 on the phone); once
+    /// `barrelEscapeHits` of them started a track, its fainter detections are no longer absorbed. Barrel points
+    /// never count as the dart still being in the board (removal and pull look at the tip).
+    static let barrelAbsorbConfidence = 0.5
+    static let barrelAbsorbRadiusMM = 20.0
+    /// Strong detections a candidate on a barrel point needs before its faint ones count. A barrel
+    /// point on the phone crept up to 0.3-0.45 with lone spikes over 0.5; a new dart there is
+    /// strong for several frames in a row.
+    static let barrelEscapeHits = 2
     /// Tracks that appear in the first usable frames after the detector starts are background:
     /// darts left in the board from before are not scored for the first player. (Off for replay.)
     static let startupBaselineFrames = 3
