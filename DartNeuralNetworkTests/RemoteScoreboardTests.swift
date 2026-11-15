@@ -13,8 +13,8 @@ private final class QuietSource: DartDetectionSource {
     func resumeVisit() {}
     func reset() {}
     func makePreviewView() -> UIView { UIView() }
-    func detect(_ segment: Segment) {
-        onEvent?(.dartDetected(DetectedDart(segment: segment, boardPosition: nil, confidence: 0.9)))
+    func detect(_ segment: Segment, confidence: Double = 0.9) {
+        onEvent?(.dartDetected(DetectedDart(segment: segment, boardPosition: nil, confidence: confidence)))
     }
 }
 
@@ -84,6 +84,20 @@ final class RemoteScoreboardTests: XCTestCase {
         XCTAssertEqual(game.recent.first?.scored, 100)
         XCTAssertEqual(game.visitNumber, session.currentVisitNumber)
         XCTAssertNil(game.winner)
+    }
+
+    /// A camera dart below `Dart.unsureConfidence` is marked on the web page too; a confident
+    /// one, or one corrected by hand, is not.
+    func testAnUnsureCameraDartIsMarked() throws {
+        let (session, source) = session()
+        source.detect(.single(5), confidence: 0.45)
+        source.detect(.triple(20), confidence: 0.85)
+        source.detect(.single(1), confidence: 0.5)
+        let third = try XCTUnwrap(session.match.activeVisit?.darts.last?.id)
+        session.correct(dartID: third, to: .single(20))
+        let darts = try XCTUnwrap(session.scoreboardSnapshot.game?.visit?.darts)
+        XCTAssertEqual(darts.map(\.unsure), [true, false, false])
+        XCTAssertEqual(darts.map(\.manual), [false, false, true])
     }
 
     func testAShortVisitIsMarkedEndedEarly() throws {

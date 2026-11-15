@@ -21,6 +21,20 @@ final class GameSession: ObservableObject, Identifiable {
     @Published private(set) var reportsSaved = 0
     /// Where reports are saved; tests use a temporary folder.
     var reportsRoot = MistakeReports.defaultRoot
+    /// Where finished visits are recorded (see `VisitRecords`); nil records nothing.
+    var visitsRoot: URL? = VisitRecords.defaultRoot
+    /// This session's folder under `visitsRoot`, named when the session was created.
+    private let visitsFolderName: String = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter.string(from: Date())
+    }()
+    /// File name of each visit recorded, and the visits whose current confirmation is recorded.
+    private var visitRecordNames: [UUID: String] = [:]
+    private var recordedConfirmations: Set<UUID> = []
+    /// The darts the camera reported per visit, before corrections.
+    private var cameraDarts: [UUID: [DetectedDart]] = [:]
 
     init(match: X01Match, source: DartDetectionSource) {
         self.match = match
@@ -49,6 +63,7 @@ final class GameSession: ObservableObject, Identifiable {
     func enter(_ segment: Segment) {
         note("by hand: \(segment.label) as dart \((match.activeVisit?.darts.count ?? 0) + 1)")
         let outcome = match.add(Dart(segment: segment))
+        recordConfirmedVisits()   // adding a dart confirms a finished visit
         Haptics.tap()
         afterDart(outcome)
     }
@@ -83,6 +98,7 @@ final class GameSession: ObservableObject, Identifiable {
         note("next")
         let finishing = match.activeOutcome == .checkout
         match.endVisit()
+        recordConfirmedVisits()
         visitAwaitingRemoval = match.visits.last?.id
         source.endVisit()
         finishing ? Haptics.success() : Haptics.nextPlayer()
@@ -93,6 +109,7 @@ final class GameSession: ObservableObject, Identifiable {
         note("undo")
         let undone = match.visits.last?.id
         match.undo()
+        recordConfirmedVisits()   // a reopened visit is saved again when confirmed again
         Haptics.tap()
         // Reopen detection when the undo touched the visit the detector closed and that visit is
         // either open again or gone (undoing its only dart removes it).
@@ -145,6 +162,31 @@ final class GameSession: ObservableObject, Identifiable {
         if log.count > Self.logLimit { log.removeFirst(log.count - Self.logLimit) }
     }
 
+    /// Saves each visit confirmed since the last call, with the darts as scored and as the camera
+    /// saw them (see `VisitRecords`). A visit that Undo reopened and that is confirmed again is
+    /// saved again under its name, as it is now; each save also starts the detector's search for
+    /// the next visit's picture.
+    private func recordConfirmedVisits() {
+        guard let root = visitsRoot else { return }
+        let confirmed = Set(match.visits.filter(\.isConfirmed).map(\.id))
+        recordedConfirmations.formIntersection(confirmed)
+        for (index, visit) in match.visits.enumerated() where visit.isConfirmed && !recordedConfirmations.contains(visit.id) {
+            recordedConfirmations.insert(visit.id)
+            let name = visitRecordNames[visit.id] ?? String(format: "visit_%03d", visitRecordNames.count + 1)
+            visitRecordNames[visit.id] = name
+            func info(_ dart: Dart) -> VisitRecords.Record.DartInfo {
+                .init(label: dart.segment.label, manual: dart.isManual, confidence: dart.confidence,
+                      x: dart.boardPosition?.x, y: dart.boardPosition?.y)
+            }
+            let record = VisitRecords.Record(
+                savedAt: ISO8601DateFormatter().string(from: Date()), time: CACurrentMediaTime(),
+                visit: index, player: visit.playerIndex, startRemaining: visit.startRemaining,
+                darts: visit.darts.map(info), camera: (cameraDarts[visit.id] ?? []).map { info($0.asDart) },
+                endedEarly: visit.endedEarly, board: nil)
+            source.saveVisit(record, into: root.appendingPathComponent(visitsFolderName, isDirectory: true), name: name)
+        }
+    }
+
     /// Undo or a correction turned the visit the detector closed back into an open one.
     private func resumeDetectionIfReopened() {
         guard let id = visitAwaitingRemoval, match.activeVisit?.id == id else { return }
@@ -167,6 +209,8 @@ final class GameSession: ObservableObject, Identifiable {
             note(String(format: "camera: %@ (%.2f) as dart %d", detected.segment.label, detected.confidence,
                         (match.activeVisit?.darts.count ?? 0) + 1))
             let outcome = match.add(detected.asDart)
+            if let visit = match.activeVisit?.id { cameraDarts[visit, default: []].append(detected) }
+            recordConfirmedVisits()   // adding a dart confirms a finished visit
             Haptics.dart()
             afterDart(outcome)
         case .visitEnded:
@@ -184,6 +228,7 @@ final class GameSession: ObservableObject, Identifiable {
             guard let awaited, let active = match.activeVisit, active.id == awaited,
                   let outcome = match.activeOutcome, outcome != .checkout else { return }
             match.endVisit()
+            recordConfirmedVisits()
             Haptics.nextPlayer()
         }
     }

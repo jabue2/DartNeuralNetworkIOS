@@ -16,8 +16,16 @@ enum DetectorTuning {
     /// Lowest confidence decoded at all. The tracker and the debug view filter further.
     static let decodeFloor = 0.02
     /// Same-class detections closer than this (fraction of the model input, i.e. of the crop)
-    /// are one object; the most confident one is kept. RF-DETR has no NMS. Offline `MIN_D=.02`.
+    /// are one object; the most confident one is kept. RF-DETR has no NMS. Offline `MIN_D=.02`,
+    /// and still the rule for calibration points and for single photos.
     static let duplicateMergeDistance = 0.02
+    /// Live darts merge more narrowly: always within `sameTipMergeDistance` (about 4 mm on a
+    /// board crop), but between that and `duplicateMergeDistance` only when the weaker detection
+    /// is below `secondTipConfidence`. Stacked darts sit 7-9.5 mm apart and the model sees the
+    /// second one at 0.6-0.85, while the duplicates it makes of one dart stay mostly below 0.5
+    /// (all 37 phone reports, 2026-11-15). The 0.02 merge was discarding three stacked darts.
+    static let sameTipMergeDistance = 0.008
+    static let secondTipConfidence = 0.5
 
     // MARK: Calibration and board lock
 
@@ -111,6 +119,36 @@ enum DetectorTuning {
     /// still in the board) belong to that dart: never reported again. About the duplicate-merge
     /// distance on a board-sized crop (2% of ~470 mm).
     static let confirmedDartRadiusMM = 10.0
+    /// Inside this distance a detection always belongs to the reported dart. Between it and
+    /// `confirmedDartRadiusMM` a strong detection may be a second dart stacked next to the first
+    /// (phone reports: 7-9.5 mm apart); it is reported only as a `stackedDart...` below.
+    static let sameDartRadiusMM = 4.0
+    /// A dart next to a reported one (within `stackedZoneMM`) counts only when its track
+    /// started after that dart was reported, and its last `stackedDartFrames` usable frames in a
+    /// row were all at `stackedDartConfidence` or more, within `stackedDartSpreadMM` of their
+    /// median, with the reported dart's own tip seen within `stackedNeighbourMM` in at least half
+    /// of them, and it is not where a point appeared together with that dart (its barrel points,
+    /// see `sameLandingFrames`). The one duplicate of a dart in the 37 phone reports (22-51-58)
+    /// appeared with its dart, wandered 2.5-11.6 mm away and flickered between 0.06 and 0.55;
+    /// stacked darts appeared seconds later and stayed at 0.6-0.85. Tip jitter of a still dart
+    /// is 0.3 mm median, 0.8 p90. Replaying the 37 reports with the model re-run on their frames
+    /// (2026-11-15), this and the live merge found 6 stacked darts the phone had lost (and one
+    /// 3 s sooner) and changed nothing else: no double, no new false dart.
+    static let stackedDartFrames = 6
+    static let stackedDartConfidence = 0.5
+    static let stackedDartSpreadMM = 1.5
+    static let stackedNeighbourMM = 2.0
+    /// A track whose tip lies this close to a dart of the open visit (wider than
+    /// `confirmedDartRadiusMM`) needs that stacked-dart evidence, whatever its history: the one
+    /// duplicate in the phone reports wandered up to 11.6 mm from its dart, and a duplicate's track
+    /// can expire and start again just outside the radius (review, 2026-11-15).
+    static let stackedZoneMM = 13.0
+    /// Beyond `confirmedDartRadiusMM` a stacked dart needs each of its frames at this or more
+    /// (and its neighbour's tip need not be seen): a steady weaker dart scores, a flickering
+    /// duplicate (down to 0.3) does not. Known limit (review, 2026-11-15): a duplicate held steady
+    /// at 0.4 or more just past 10 mm scores, as it did before this zone existed; on the phone the
+    /// one duplicate seen flickered and never held steady.
+    static let stackedOuterConfidence = 0.4
     /// Detections farther than this from the board centre are ignored: the scoring area ends at
     /// 170 mm, and the margin only lets a track near the double ring keep its outlying observations.
     /// Tracks whose tip lies outside 170 mm are never reported either. A miss scores nothing, and

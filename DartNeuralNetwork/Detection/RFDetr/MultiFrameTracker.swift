@@ -42,6 +42,11 @@ struct MultiFrameTracker: Codable {
         /// Where points on its barrel were seen (tracks that appeared with it); weak detections
         /// there belong to it (see `barrelAbsorbConfidence`).
         var barrelMM: [SIMD2<Double>]? = nil
+        /// Usable frame it was reported in; nil in checkpoints saved before it existed.
+        var reportedFrame: Int? = nil
+        /// Recent usable frames in which its own tip was detected (within `stackedNeighbourMM`):
+        /// a dart stacked next to it must be seen while this one still is (see `stackedDartFrames`).
+        var tipSeenFrames: [Int]? = nil
 
         /// A detection at its tip: this dart is still in the board.
         func coversTip(_ p: SIMD2<Double>) -> Bool {
@@ -465,10 +470,25 @@ struct MultiFrameTracker: Codable {
                     && t.observations.filter { $0.confidence >= Tuning.barrelAbsorbConfidence }.count >= Tuning.barrelEscapeHits
             }
         }
+        // Each dart of the open visit claims its nearest detection: that is its tip. Another strong
+        // detection beside it (farther than `sameDartRadiusMM`) may be a dart stacked next to it,
+        // so it goes on to the tracks; confirming it takes `isStackedDart`.
+        var claimed = Set<Int>()
+        for dart in openVisit {
+            guard let (index, distance) = seen.indices.map({ ($0, simd_distance(seen[$0].boardMM, dart.boardMM)) })
+                .filter({ $0.1 <= Tuning.confirmedDartRadiusMM }).min(by: { $0.1 < $1.1 }) else { continue }
+            claimed.insert(index)
+            if distance <= Tuning.stackedNeighbourMM { noteTipSeen(of: dart.id, frame: frameIndex) }
+        }
+        func belongsToOpenVisit(_ index: Int) -> Bool {
+            let o = seen[index]
+            if claimed.contains(index) || o.confidence < Tuning.stackedDartConfidence { return nearOpenVisit(o.boardMM) }
+            return openVisit.contains { simd_distance($0.boardMM, o.boardMM) <= Tuning.sameDartRadiusMM }
+        }
         var free: [Observation] = []
         var oldDartSeen = false
-        for o in seen {
-            if nearOpenVisit(o.boardMM) { continue }
+        for (index, o) in seen.enumerated() {
+            if belongsToOpenVisit(index) { continue }
             if oldDarts.contains(where: { $0.coversTip(o.boardMM) }) {
                 oldDartSeen = true
                 continue
@@ -560,9 +580,20 @@ struct MultiFrameTracker: Codable {
             // Outside the double ring: a barrel or flight seen from a steep angle, or a real miss.
             // Never reported; the track stays and scores if its tip settles inside.
             if segment == .miss { continue }
+            // Beside a dart of this visit (within `stackedZoneMM`): a second dart stacked next to it
+            // only on the stricter evidence of `isStackedDart`; until then the track waits.
+            let open = visitDarts + resumedDarts
+            if let neighbour = open.filter({ simd_distance($0.boardMM, tip) <= Tuning.stackedZoneMM })
+                .min(by: { simd_distance($0.boardMM, tip) < simd_distance($1.boardMM, tip) }),
+               simd_distance(neighbour.boardMM, tip) > Tuning.sameDartRadiusMM,
+               !oldDarts.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM }),
+               !isStackedDart(track, beside: neighbour) {
+                continue
+            }
             tracks.removeAll { $0.id == track.id }
             // Drifted onto a dart already reported: it is that dart.
-            if (visitDarts + resumedDarts + oldDarts).contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM }) { continue }
+            if oldDarts.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM })
+                || open.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.sameDartRadiusMM }) { continue }
             // Appeared together with a dart already reported: a point on its barrel, not a new dart.
             if let i = visitDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
                 visitDarts[i].barrelMM = (visitDarts[i].barrelMM ?? []) + [tip]
@@ -574,7 +605,8 @@ struct MultiFrameTracker: Codable {
             }
             var dart = ConfirmedDart(id: track.id, boardMM: tip, segment: segment,
                                      confidence: track.observations.map(\.confidence).max() ?? 0,
-                                     firstFrame: track.seenArriving == true ? track.firstFrame : nil)
+                                     firstFrame: track.seenArriving == true ? track.firstFrame : nil,
+                                     reportedFrame: frameIndex)
             // The other tracks that appeared with it are its barrel: they never become darts.
             let barrel = tracks.filter { Self.landedTogether($0, dart) }
             dart.barrelMM = barrel.map(\.tipMM)
@@ -584,6 +616,44 @@ struct MultiFrameTracker: Codable {
                                                      confidence: dart.confidence)))
         }
         return events
+    }
+
+    /// A track beside a reported dart is a second dart stacked next to it, not a duplicate of it
+    /// (see `stackedDartFrames`): it appeared after that dart was reported, and in its last usable
+    /// frames in a row it was strong, still, and seen together with that dart's own tip.
+    /// Past `confirmedDartRadiusMM` (out to `stackedZoneMM`) the test is lighter: each frame at
+    /// `stackedOuterConfidence` or more, and the dart's own tip need not be seen (the new dart may
+    /// hide it); there a duplicate only shows up flickering, and the old tracker scored such tracks freely.
+    func isStackedDart(_ track: Track, beside dart: ConfirmedDart) -> Bool {
+        guard let reported = dart.reportedFrame, track.firstFrame > reported else { return false }
+        let outer = simd_distance(track.tipMM, dart.boardMM) > Tuning.confirmedDartRadiusMM
+        let minimum = outer ? Tuning.stackedOuterConfidence : Tuning.stackedDartConfidence
+        // Something that appeared with the dart at this spot was recorded as part of it (see
+        // `landedTogether`); its later detections start a new track but are still that dart.
+        if (dart.barrelMM ?? []).contains(where: { simd_distance($0, track.tipMM) <= Tuning.sameDartRadiusMM }) { return false }
+        let recent = track.observations.suffix(Tuning.stackedDartFrames)
+        guard recent.count == Tuning.stackedDartFrames, recent.last?.frame == usableFrameCount,
+              zip(recent, recent.dropFirst()).allSatisfy({ $1.frame == $0.frame + 1 }),
+              recent.allSatisfy({ $0.confidence >= minimum })
+        else { return false }
+        let centre = SIMD2(median(recent.map(\.boardMM.x)), median(recent.map(\.boardMM.y)))
+        guard recent.allSatisfy({ simd_distance($0.boardMM, centre) <= Tuning.stackedDartSpreadMM }) else { return false }
+        if outer { return true }
+        let frames = Set(recent.map(\.frame))
+        let together = (dart.tipSeenFrames ?? []).filter { frames.contains($0) }.count
+        return 2 * together >= Tuning.stackedDartFrames
+    }
+
+    /// Notes that the tip of reported dart `id` was seen in usable frame `frame`.
+    private mutating func noteTipSeen(of id: Int, frame: Int) {
+        func note(_ dart: inout ConfirmedDart) {
+            var frames = dart.tipSeenFrames ?? []
+            frames.append(frame)
+            if frames.count > 2 * Tuning.stackedDartFrames { frames.removeFirst(frames.count - 2 * Tuning.stackedDartFrames) }
+            dart.tipSeenFrames = frames
+        }
+        if let i = visitDarts.firstIndex(where: { $0.id == id }) { note(&visitDarts[i]) }
+        if let i = resumedDarts.firstIndex(where: { $0.id == id }) { note(&resumedDarts[i]) }
     }
 
     /// One dart lands at a time: a track that first appeared within `sameLandingFrames` of a

@@ -105,6 +105,11 @@ final class DetectionEngine: @unchecked Sendable {
     func saveRecording(to folder: URL, completion: @escaping (DetectorRecorder.Summary?) -> Void) {
         queue.async { self.recorder.save(to: folder, completion: completion) }
     }
+    /// Saves the finished visit with the detector's best view of it (see `DetectorRecorder.saveVisit`),
+    /// after every frame processed before this call.
+    func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {
+        queue.async { self.recorder.saveVisit(record, into: folder, name: name) }
+    }
     func setDebugEnabled(_ enabled: Bool) { queue.async { self.debugEnabled = enabled } }
 
     /// Processes a frame. Must be called on `queue`; skips frames beyond `maxFramesPerSecond`.
@@ -120,7 +125,7 @@ final class DetectionEngine: @unchecked Sendable {
 
         let crop = tracker.crop
         let started = CACurrentMediaTime()
-        guard let detections = try? model.detect(in: frame, crop: crop) else { return }
+        guard let detections = try? model.detect(in: frame, crop: crop, merge: .live) else { return }
         let milliseconds = (CACurrentMediaTime() - started) * 1000
         let observation = FrameObservation(imageSize: frame.size, crop: crop, detections: detections)
         if let last = lastCheckpointTime, time >= last, time - last < checkpointSeconds {

@@ -82,7 +82,7 @@ struct DartSlot: View {
 
     @ViewBuilder
     private func marker(for dart: Dart) -> some View {
-        if let confidence = dart.confidence, confidence < 0.6 {
+        if dart.isUnsure {
             // Low-confidence detection: worth a look.
             Image(systemName: "questionmark")
                 .font(.system(size: 11, weight: .black))

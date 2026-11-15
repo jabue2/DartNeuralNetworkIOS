@@ -102,6 +102,10 @@ final class RFDetrDetectionSource: DartDetectionSource {
         }
     }
 
+    func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {
+        engine.saveVisit(record, into: folder, name: name)
+    }
+
     private func apply(_ output: DetectionEngine.Output) {
         for event in output.events {
             if case .status(let next) = event {

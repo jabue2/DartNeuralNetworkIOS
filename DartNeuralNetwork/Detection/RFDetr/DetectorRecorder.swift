@@ -80,6 +80,10 @@ final class DetectorRecorder: @unchecked Sendable {
     private var imageBytes = 0
     private var nextSeq = 0
     private lazy var context = CIContext(options: [.cacheIntermediates: false])
+    /// The best view of the visit being thrown (see `saveVisit`), with its image and its score:
+    /// darts seen at `visitDartConfidence` or more.
+    private var visitPicture: (entry: Entry, image: Data, darts: Int)?
+    static let visitDartConfidence = 0.3
 
     private let lock = NSLock()
     private var encoding = false   // guarded by `lock`
@@ -115,7 +119,60 @@ final class DetectorRecorder: @unchecked Sendable {
             self.images.append((seq, time, data))
             self.imageBytes += data.count
             self.trim()
+            self.considerForVisit(Entry(seq: seq, time: time, command: nil, frame: frame), image: data)
         }
+    }
+
+    /// Writes the visit's best view (`<name>.jpg`) and `record` with it (`<name>.json`) into
+    /// `folder`, after every frame recorded so far, and starts looking for the next visit's view.
+    /// The best view is the clear view, while darts were being thrown, with the most darts seen;
+    /// on a tie the later one. Only frames with an image count: a frame arriving while the previous
+    /// image is still being encoded has none, but on the phone that was 0.1% of frames, never more
+    /// than 3 in a row (2026-11-15), while a board with the same darts stays the same for seconds.
+    /// A visit saved again under the same name keeps its earlier picture unless the new one shows more darts.
+    func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {
+        queue.async {
+            var record = record
+            var picture = self.visitPicture
+            self.visitPicture = nil
+            if let earlier = Self.savedPicture(in: folder, name: name), earlier.darts >= (picture?.darts ?? -1) {
+                picture = earlier
+            }
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                if let picture {
+                    try picture.image.write(to: folder.appendingPathComponent("\(name).jpg"))
+                    record.board = picture.entry
+                }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                try encoder.encode(record).write(to: folder.appendingPathComponent("\(name).json"))
+            } catch {
+                print("Saving the visit record failed: \(error)")
+            }
+        }
+    }
+
+    /// The picture already saved under `name` (a visit saved again), read back from disk.
+    private static func savedPicture(in folder: URL, name: String) -> (entry: Entry, image: Data, darts: Int)? {
+        guard let json = try? Data(contentsOf: folder.appendingPathComponent("\(name).json")),
+              let entry = (try? JSONDecoder().decode(VisitRecords.Record.self, from: json))?.board,
+              let frame = entry.frame, let darts = visitDarts(in: frame),
+              let image = try? Data(contentsOf: folder.appendingPathComponent("\(name).jpg"))
+        else { return nil }
+        return (entry, image, darts)
+    }
+
+    private func considerForVisit(_ entry: Entry, image: Data) {
+        guard let frame = entry.frame, let darts = Self.visitDarts(in: frame) else { return }
+        if let best = visitPicture, best.darts > darts { return }
+        visitPicture = (entry, image, darts)
+    }
+
+    /// Darts seen in a clear view while throwing; nil for frames that cannot be a visit's view.
+    private static func visitDarts(in frame: Frame) -> Int? {
+        guard frame.use == "clear", frame.phase == "throwing" else { return nil }
+        return frame.detections.filter { $0.c == RFDetrDecoder.dartClass && $0.p >= visitDartConfidence }.count
     }
 
     func record(command: String, time: Double = CACurrentMediaTime()) {

@@ -35,6 +35,12 @@ struct Dart: Identifiable, Hashable {
     }
 
     var isManual: Bool { confidence == nil }
+
+    /// Camera darts below this confidence are marked for a check, on the phone and the web
+    /// scoreboard. On the phone (game logs, 2026-11-15) this marked 15 of the 23 camera darts the
+    /// player corrected, and about 3% of the correct ones.
+    static let unsureConfidence = 0.6
+    var isUnsure: Bool { confidence.map { $0 < Self.unsureConfidence } ?? false }
 }
 
 enum VisitOutcome: Equatable {

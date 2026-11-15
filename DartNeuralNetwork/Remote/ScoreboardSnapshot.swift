@@ -25,6 +25,8 @@ struct ScoreboardSnapshot: Codable, Equatable {
         var points: Int
         /// Entered or corrected by hand rather than seen by the camera.
         var manual: Bool
+        /// Seen by the camera with low confidence (`Dart.isUnsure`): worth a check.
+        var unsure: Bool
     }
 
     struct VisitInfo: Codable, Equatable {
@@ -107,7 +109,7 @@ struct ScoreboardSnapshot: Codable, Equatable {
                     shown: shown,
                     visit: match.activeVisit.map { Self.visitInfo($0, rules: rules) },
                     dartsLeft: match.dartsLeftInVisit,
-                    checkout: match.checkoutSuggestion?.map { Self.dartInfo($0, manual: false) },
+                    checkout: match.checkoutSuggestion?.map { Self.dartInfo($0, manual: false, unsure: false) },
                     canUndo: match.canUndo,
                     winner: match.winnerIndex,
                     recent: Array(recent))
@@ -134,13 +136,13 @@ struct ScoreboardSnapshot: Codable, Equatable {
         case .checkout: outcome = "checkout"
         }
         return VisitInfo(player: visit.playerIndex,
-                         darts: visit.darts.map { dartInfo($0.segment, manual: $0.isManual) },
+                         darts: visit.darts.map { dartInfo($0.segment, manual: $0.isManual, unsure: $0.isUnsure) },
                          outcome: outcome,
                          scored: evaluation.scored,
                          endedEarly: visit.endedEarly)
     }
 
-    private static func dartInfo(_ segment: Segment, manual: Bool) -> DartInfo {
+    private static func dartInfo(_ segment: Segment, manual: Bool, unsure: Bool) -> DartInfo {
         let ring: String
         switch segment {
         case .miss: ring = "miss"
@@ -150,7 +152,7 @@ struct ScoreboardSnapshot: Codable, Equatable {
         case .outerBull: ring = "outerBull"
         case .bull: ring = "bull"
         }
-        return DartInfo(label: segment.label, ring: ring, points: segment.points, manual: manual)
+        return DartInfo(label: segment.label, ring: ring, points: segment.points, manual: manual, unsure: unsure)
     }
 }
 

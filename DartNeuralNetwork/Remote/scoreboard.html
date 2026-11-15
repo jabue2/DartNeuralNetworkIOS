@@ -103,6 +103,10 @@ button:disabled { cursor: default; }
 .slot.void { opacity: .35; }
 .slot.ring-single { background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--hairline); }
 .slot .manual { position: absolute; top: 10px; right: 12px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; opacity: .7; }
+/* Low-confidence camera dart: same amber question mark as on the phone. */
+.slot .unsure { position: absolute; top: 9px; right: 9px; width: 28px; height: 28px; border-radius: 50%; background: var(--amber); color: #101314; font: 800 20px/28px var(--num); text-align: center; }
+.hint.check { color: var(--ink); font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.hint .q { width: 20px; height: 20px; border-radius: 50%; background: var(--amber); color: #101314; font: 800 15px/20px var(--num); text-align: center; flex: none; }
 .hint { color: var(--muted); font-size: 15px; font-weight: 500; text-align: center; min-height: 20px; }
 
 .actions { display: flex; gap: 12px; margin-top: auto; }
@@ -337,8 +341,8 @@ function playing(g) {
   const slots = [0, 1, 2].map(i => {
     const d = darts[i];
     if (d) {
-      return `<button class="slot ring-${d.ring}" data-slot="${i}" aria-label="Dart ${i + 1}: ${esc(d.label)}, change">
-        ${d.manual ? '<span class="manual">Edited</span>' : ""}
+      return `<button class="slot ring-${d.ring}" data-slot="${i}" aria-label="Dart ${i + 1}: ${esc(d.label)}${d.unsure ? ", unsure" : ""}, change">
+        ${d.manual ? '<span class="manual">Edited</span>' : d.unsure ? '<span class="unsure" aria-hidden="true">?</span>' : ""}
         <span class="label">${esc(d.label)}</span><span class="sub">${d.points} pts</span></button>`;
     }
     const isNext = !done && i === darts.length;
@@ -347,7 +351,9 @@ function playing(g) {
       <span class="label">${isNext ? "+" : "–"}</span><span class="sub">Dart ${i + 1}</span></button>`;
   }).join("");
 
-  const hint = done && outcome !== "checkout" && snap.board === "ready" ? "Pull your darts to continue" : "";
+  const unsureCount = darts.filter(d => d.unsure).length, unsure = unsureCount > 0;
+  const hint = unsure ? `<span class="q" aria-hidden="true">?</span>Camera unsure: check the marked dart${unsureCount > 1 ? "s" : ""}, tap to change`
+    : done && outcome !== "checkout" && snap.board === "ready" ? "Pull your darts to continue" : "";
   const nextLabel = outcome === "checkout" ? "Finish leg"
     : multi ? `Next <span class="faded">${esc(nextName)}</span>` : "Next visit";
 
@@ -357,7 +363,7 @@ function playing(g) {
       <div class="big ${outcome === "bust" ? "bust" : outcome === "checkout" ? "checkout" : ""}">${g.shown}</div>
       <div class="statusline">${status}${total}</div>
       <div class="slots">${slots}</div>
-      <div class="hint">${hint}</div>
+      <div class="hint${unsure ? " check" : ""}">${hint}</div>
       <div class="actions">
         <button class="btn round" data-act="undo" ${g.canUndo && live ? "" : "disabled"} aria-label="Undo">${ICON.undo}</button>
         <button class="btn grow${done ? " primary" : ""}" data-act="next" ${live ? "" : "disabled"}>${nextLabel}${ICON.arrow}</button>

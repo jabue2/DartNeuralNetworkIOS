@@ -170,7 +170,7 @@ final class MultiFrameTrackerTests: XCTestCase {
         lock()
         let first = mm(.triple(20))
         run(4, darts: [.init(mm: first, confidence: 0.8)])
-        run(20, darts: [.init(mm: first, confidence: 0.8), .init(mm: first + SIMD2(6, 2), confidence: 0.5)])
+        run(20, darts: [.init(mm: first, confidence: 0.8), .init(mm: first + SIMD2(6, 2), confidence: 0.45)])
         XCTAssertEqual(darts.count, 1)
     }
 
@@ -691,5 +691,109 @@ final class MultiFrameTrackerTests: XCTestCase {
         tracker.endVisit()
         run(DetectorTuning.removalFramesNeeded + 2, darts: [.init(mm: barrel2, confidence: 0.06)])
         XCTAssertTrue(events.contains(.boardCleared))
+    }
+
+    // MARK: Stacked darts (phone reports, 2026-11-15)
+
+    /// A dart that lands 7-9 mm from one already reported, seconds later, and stays strong is a
+    /// second dart. The model saw such darts at 0.6-0.85; they used to be absorbed by the first.
+    func testADartStackedNextToAnotherLaterCounts() {
+        lockAndWatch()
+        let first = mm(.triple(20))
+        let second = first + SIMD2(7, 3)
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        run(20, darts: [.init(mm: first, confidence: 0.8), .init(mm: second, confidence: 0.75)])
+        XCTAssertEqual(darts.count, 2)
+        if darts.count == 2, let position = darts[1].boardPosition {
+            XCTAssertLessThan(simd_distance(position.millimetres, second), 1)
+        }
+    }
+
+    /// A duplicate the model makes of one dart (22-51-58: a D1 on the wire) appears with it,
+    /// wanders and flickers: never a second dart, even when it spikes over 0.5.
+    func testAFlickeringDuplicateBesideADartIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.double(1), angle: 0.1)
+        let confidences = [0.06, 0.3, 0.55, 0.2, 0.52, 0.1, 0.4, 0.55, 0.35, 0.51]
+        for i in 0..<80 {
+            let wander = SIMD2(5 + Double(i % 5), Double(i % 3) - 1)
+            run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + wander, confidence: confidences[i % confidences.count])])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review S1: a duplicate that wanders from just inside the radius to just outside it is still
+    /// beside the dart, and needs the stacked-dart evidence.
+    func testADuplicateWanderingPastTheRadiusIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.single(20), angle: 0.1)
+        run(25, darts: [.init(mm: tip, confidence: 0.8)])
+        run(2, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 9.9), confidence: 0.55)])
+        run(2, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 10.2), confidence: 0.55)])
+        run(10, darts: [.init(mm: tip, confidence: 0.8)])
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review S1, round 2: the same after so long outside the radius that the observations inside
+    /// it were dropped from the track (`tipObservationsKept`).
+    func testADuplicateLongPastTheRadiusIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.single(20), angle: 0.1)
+        run(25, darts: [.init(mm: tip, confidence: 0.8)])
+        run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 9.9), confidence: 0.55)])
+        for i in 0..<(2 * DetectorTuning.tipObservationsKept) {
+            run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 10.2), confidence: i % 2 == 0 ? 0.55 : 0.3)])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review S1, round 3: a duplicate whose track expired (its faint detections inside the radius
+    /// belong to the dart) and starts again just outside the radius is still beside the dart.
+    func testADuplicateWhoseTrackRestartsPastTheRadiusIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.single(20), angle: 0.1)
+        run(25, darts: [.init(mm: tip, confidence: 0.8)])
+        run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 9.9), confidence: 0.55)])
+        run(DetectorTuning.maxMissStreak + 1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 9.9), confidence: 0.3)])
+        for i in 0..<60 {
+            run(1, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(0, 10.2), confidence: i % 2 == 0 ? 0.55 : 0.3)])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review, round 4: past the 10 mm radius a steady weaker second dart still counts, and so
+    /// does one that hides the first dart's tip.
+    func testASteadyDartJustPastTheRadiusCounts() {
+        lockAndWatch()
+        let first = mm(.single(20), angle: -0.2)
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        run(25, darts: [.init(mm: first, confidence: 0.8), .init(mm: first + SIMD2(11.5, 0), confidence: 0.45)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    func testADartHidingTheFirstOnesTipJustPastTheRadiusCounts() {
+        lockAndWatch()
+        let first = mm(.single(20), angle: -0.2)
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        run(25, darts: [.init(mm: first + SIMD2(11.5, 0), confidence: 0.8)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A strong point beside a dart that was there from the moment the dart landed is part of it.
+    func testAStrongPointThatAppearedWithItsDartIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.single(5))
+        run(60, darts: [.init(mm: tip, confidence: 0.8), .init(mm: tip + SIMD2(6, -5), confidence: 0.7)])
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// A strong point beside a dart whose own tip is no longer seen is that dart, moved or seen
+    /// differently: not a second dart.
+    func testAPointBesideADartThatIsNoLongerSeenIsNotASecondDart() {
+        lockAndWatch()
+        let tip = mm(.single(13))
+        run(25, darts: [.init(mm: tip, confidence: 0.8)])
+        run(40, darts: [.init(mm: tip + SIMD2(7, 2), confidence: 0.8)])
+        XCTAssertEqual(darts.count, 1)
     }
 }

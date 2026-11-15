@@ -92,6 +92,20 @@ final class RFDetrDecodingTests: XCTestCase {
         XCTAssertEqual(merged.map(\.confidence), [0.9, 0.7, 0.3])
     }
 
+    /// Live: two strong darts 1.5% apart are two darts (stacked); a weak one there, or any within
+    /// 0.8%, is a duplicate. Calibration points keep the 2% merge.
+    func testLiveMergeKeepsAStrongSecondDartNextToAnother() {
+        let d = [
+            ModelDetection(classIndex: 12, point: SIMD2(0.500, 0.50), confidence: 0.85),
+            ModelDetection(classIndex: 12, point: SIMD2(0.515, 0.50), confidence: 0.80),   // stacked dart: kept
+            ModelDetection(classIndex: 12, point: SIMD2(0.500, 0.515), confidence: 0.45),  // weak, 1.5%: duplicate
+            ModelDetection(classIndex: 12, point: SIMD2(0.506, 0.50), confidence: 0.75),   // 0.6%: always the same tip
+            ModelDetection(classIndex: 3, point: SIMD2(0.30, 0.30), confidence: 0.9),
+            ModelDetection(classIndex: 3, point: SIMD2(0.315, 0.30), confidence: 0.8),     // calibration, 1.5%: merged
+        ]
+        XCTAssertEqual(RFDetrDecoder.mergeLive(d).map(\.confidence), [0.9, 0.85, 0.80])
+    }
+
     /// The model input matches OpenCV's resize and normalisation (JPEG decoders differ by a level or two).
     func testPreprocessingMatchesPython() throws {
         try TestResources.requirePhotos()

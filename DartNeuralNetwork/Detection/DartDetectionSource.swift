@@ -77,11 +77,15 @@ protocol DartDetectionSource: AnyObject {
     /// Saves what the detector saw in the last seconds into `folder` (see `DetectorRecorder`).
     /// Nil when the source records nothing (demo, tests) or saving failed.
     func saveRecording(into folder: URL) async -> DetectorRecorder.Summary?
+    /// Saves a finished visit with the detector's best view of it as `<name>.json` and
+    /// `<name>.jpg` in `folder` (see `VisitRecords`). Sources that record nothing save nothing.
+    func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String)
 }
 
 extension DartDetectionSource {
     var debugModel: DetectorDebugModel? { nil }
     func saveRecording(into folder: URL) async -> DetectorRecorder.Summary? { nil }
+    func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {}
 }
 
 enum DetectionSourceFactory {

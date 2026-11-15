@@ -103,6 +103,27 @@ enum RFDetrDecoder {
         }
         return kept
     }
+
+    /// The live merge: calibration points as `mergeDuplicates` at `duplicateMergeDistance`; darts
+    /// always within `sameTipMergeDistance`, and up to `duplicateMergeDistance` only when the
+    /// weaker one is below `secondTipConfidence`, so a dart stacked next to another survives.
+    static func mergeLive(_ detections: [ModelDetection]) -> [ModelDetection] {
+        var kept: [ModelDetection] = []
+        let sorted = detections.enumerated().sorted {
+            $0.element.confidence != $1.element.confidence ? $0.element.confidence > $1.element.confidence : $0.offset < $1.offset
+        }.map(\.element)
+        for d in sorted {
+            let duplicate = kept.contains { k in
+                guard k.classIndex == d.classIndex else { return false }
+                let distance = simd_distance(k.point, d.point)
+                guard d.isDart else { return distance < DetectorTuning.duplicateMergeDistance }
+                return distance < DetectorTuning.sameTipMergeDistance
+                    || (distance < DetectorTuning.duplicateMergeDistance && d.confidence < DetectorTuning.secondTipConfidence)
+            }
+            if !duplicate { kept.append(d) }
+        }
+        return kept
+    }
 }
 
 /// Writes the model input: crop, bilinear stretch to `modelInputSide` squared (OpenCV `INTER_LINEAR`
@@ -203,15 +224,27 @@ final class RFDetrModel {
         return try RFDetrModel(model: MLModel(contentsOf: url, configuration: configuration))
     }
 
+    /// How duplicate detections are merged.
+    enum Merge {
+        /// `duplicateMergeDistance` for every class: the offline reference, for single photos.
+        case reference
+        /// `RFDetrDecoder.mergeLive`: the camera, where the tracker tells duplicates from stacked darts.
+        case live
+    }
+
     /// Runs the model on `crop` (the whole frame when nil) and returns merged detections at
     /// `DetectorTuning.decodeFloor` or more, in pixels of the upright frame.
-    func detect(in frame: FrameImage, crop: CGRect? = nil) throws -> [ModelDetection] {
+    func detect(in frame: FrameImage, crop: CGRect? = nil, merge: Merge = .reference) throws -> [ModelDetection] {
         let region = Self.inputRegion(crop: crop, frameSize: frame.size)
         ModelInputWriter.write(frame, crop: region, into: input)
         let output = try model.prediction(from: provider)
         guard let (boxes, logits) = Self.outputs(output) else { throw CocoaError(.coderValueNotFound) }
         let decoded = RFDetrDecoder.decode(boxes: boxes, logits: logits, minConfidence: DetectorTuning.decodeFloor)
-        return RFDetrDecoder.mergeDuplicates(decoded, minDistance: DetectorTuning.duplicateMergeDistance).map { d in
+        let merged = switch merge {
+        case .reference: RFDetrDecoder.mergeDuplicates(decoded, minDistance: DetectorTuning.duplicateMergeDistance)
+        case .live: RFDetrDecoder.mergeLive(decoded)
+        }
+        return merged.map { d in
             var d = d
             d.point = SIMD2(Double(region.minX) + d.point.x * Double(region.width),
                             Double(region.minY) + d.point.y * Double(region.height))
