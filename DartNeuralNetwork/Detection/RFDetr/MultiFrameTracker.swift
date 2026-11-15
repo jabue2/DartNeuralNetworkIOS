@@ -262,9 +262,12 @@ struct MultiFrameTracker: Codable {
         if agreeing.count >= 4 && agreeing.count >= disagreeing {
             movedStreak = 0
             framesSinceUsable = 0
-            remember(agreeing)
+            remember(pointsToLearn(points, agreeing: agreeing))
             if let refit = medianFit() {
                 homography = refit.homography
+                // The pose a later re-lock is compared with: the refined lock, not the one first
+                // formed, which may have been off (see `pointsToLearn`).
+                lockedPose = refit.homography
                 lockRMSErrorMM = refit.rmsErrorMM
                 updateCrop()
             }
@@ -283,6 +286,24 @@ struct MultiFrameTracker: Codable {
         }
         if framesSinceUsable >= Tuning.lostFramesBeforeUnlock { unlock() }
         return points.count < 2 ? .noBoard : .occluded
+    }
+
+    /// The points that refine a lock: those that agree with it, or, when this frame alone shows
+    /// most of the board sharply (every point on one board within `relearnFitMM`) and that board
+    /// keeps the agreeing points, all of its points.
+    /// A lock formed while a player covered part of the board fits the visible part and can miss
+    /// the rest by more than `pointAgreementMM`. Learning only from agreeing points, it never
+    /// corrected: no clear view for whole visits (phone report, 2026-11-14).
+    private func pointsToLearn(_ points: [Int: SIMD2<Double>], agreeing: [Int: SIMD2<Double>]) -> [Int: SIMD2<Double>] {
+        guard points.count > agreeing.count, let fit = BoardCalibration.fit(points) else { return agreeing }
+        let board = Set(fit.inlierClasses)
+        guard board.count >= Tuning.relearnMinPoints, board.count > agreeing.count,
+              agreeing.keys.filter({ !board.contains($0) }).count <= 1,
+              board.allSatisfy({ c in
+                  fit.homography.apply(points[c]!).map { simd_distance($0, BoardCalibration.targetsMM[c]) <= Tuning.relearnFitMM } ?? false
+              })
+        else { return agreeing }
+        return points.filter { board.contains($0.key) }
     }
 
     /// Collects agreeing frames until the board can lock.

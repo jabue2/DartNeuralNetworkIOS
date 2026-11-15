@@ -35,6 +35,14 @@ enum DetectorTuning {
     /// Once locked, a calibration point agrees with the lock when it lands this close to its
     /// target. Same as the RANSAC threshold.
     static let pointAgreementMM = 6.0
+    /// Calibration points that must fit one board in a single frame before points that disagree
+    /// with the lock refine it. Eight leave a homography (eight unknowns) well over-determined,
+    /// so a few points thrown off by a hand or a shadow cannot pull the lock.
+    static let relearnMinPoints = 8
+    /// ...and every one of them within this distance of its target under that frame's own fit.
+    /// Sharp full-board frames on the phone fit within 0.8 mm at their worst point (median; 1 mm
+    /// for 90%), while a fit bent to take in a few misplaced points misses some by several mm.
+    static let relearnFitMM = 2.0
     /// Consecutive frames whose calibration points disagree with the lock before the detector
     /// decides the camera moved and locks again. Darts in board millimetres survive a re-lock.
     static let movedFramesNeeded = 3

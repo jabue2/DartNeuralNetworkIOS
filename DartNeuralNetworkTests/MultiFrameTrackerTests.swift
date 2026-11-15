@@ -499,6 +499,28 @@ final class MultiFrameTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.lastFrameUse, .usable(clearView: true))
     }
 
+    /// Points thrown off by a hand or a shadow, frame after frame, never move the lock: the rest
+    /// of the board fits without them.
+    func testAFewMisplacedPointsDoNotMoveTheLock() throws {
+        lock()
+        let before = try XCTUnwrap(tracker.homography)
+        let camera = scene.camera
+        // Three neighbouring points (27°-81°) seen 10 mm off, next to nine true ones.
+        scene.camera = Homography(rows: [1, 0, 0, 0, 1, 10, 0, 0, 1]).then(camera)
+        let misplaced = scene.frame(calibration: [3, 4, 5])
+        scene.camera = camera
+        for _ in 0..<30 {
+            var frame = scene.frame(calibration: Set(0..<12).subtracting([3, 4, 5]))
+            frame.detections += misplaced.detections
+            events += tracker.process(frame)
+        }
+        let after = try XCTUnwrap(tracker.homography)
+        for target in BoardCalibration.targetsMM {
+            let pixel = camera.apply(target)!
+            XCTAssertLessThan(simd_distance(after.apply(pixel)!, before.apply(pixel)!), 1)
+        }
+    }
+
     /// An unconfirmed dart at reset is still a dart that may be in the board.
     func testResetWithAnUnconfirmedDartKeepsTheBarrier() {
         lock()
