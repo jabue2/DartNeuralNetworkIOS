@@ -50,15 +50,18 @@ final class RFDetrDetectionSource: DartDetectionSource {
 
     private let feed: FrameFeed
     private let engine: DetectionEngine
+    /// Games with this source record whole sessions (the camera only; not replays or tests).
+    private let recordsSessions: Bool
     private let previewHost = PreviewHostView()
     private var running = false
     /// Counts the game's commands; see the type's comment.
     private var generation = 0
 
     /// `loadModel` is replaceable for tests and the DEBUG failure preview.
-    init(feed: FrameFeed, ignoresDartsAtStart: Bool = true,
+    init(feed: FrameFeed, ignoresDartsAtStart: Bool = true, recordsSessions: Bool = false,
          loadModel: @escaping () throws -> RFDetrModel = { try RFDetrModel.loadBundled() }) {
         self.feed = feed
+        self.recordsSessions = recordsSessions
         engine = DetectionEngine(ignoresDartsAtStart: ignoresDartsAtStart, loadModel: loadModel)
         engine.output = { [weak self] output in
             // Main queue blocks run in submission order, so events keep their order.
@@ -71,7 +74,7 @@ final class RFDetrDetectionSource: DartDetectionSource {
     }
 
     /// The camera-based source used in games.
-    static func camera() -> RFDetrDetectionSource { RFDetrDetectionSource(feed: CameraFeed()) }
+    static func camera() -> RFDetrDetectionSource { RFDetrDetectionSource(feed: CameraFeed(), recordsSessions: true) }
 
     func start() {
         guard !running else { return }
@@ -100,6 +103,19 @@ final class RFDetrDetectionSource: DartDetectionSource {
         await withCheckedContinuation { continuation in
             engine.saveRecording(to: folder) { continuation.resume(returning: $0) }
         }
+    }
+
+    func startSessionRecording(into folder: URL) {
+        if recordsSessions { engine.startSessionRecording(into: folder) }
+    }
+    func stopSessionRecording() {
+        if recordsSessions { engine.stopSessionRecording() }
+    }
+    func recordSession(logLine: MistakeReports.GameFile.LogLine) {
+        if recordsSessions { engine.recorder.recordGame(logLine: logLine) }
+    }
+    func recordSession(game: MistakeReports.GameFile) {
+        if recordsSessions { engine.recorder.recordGame(game) }
     }
 
     func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {

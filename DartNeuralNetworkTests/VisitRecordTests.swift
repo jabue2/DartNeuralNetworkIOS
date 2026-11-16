@@ -15,6 +15,11 @@ private final class RecordingSource: DartDetectionSource {
     func reset() {}
     func makePreviewView() -> UIView { UIView() }
     func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) { saved.append((record, folder, name)) }
+    private(set) var recording: [String] = []
+    func startSessionRecording(into folder: URL) { recording.append("start \(folder.lastPathComponent)") }
+    func stopSessionRecording() { recording.append("stop") }
+    func recordSession(logLine: MistakeReports.GameFile.LogLine) { recording.append("log \(logLine.text)") }
+    func recordSession(game: MistakeReports.GameFile) { recording.append("game \(game.visits.count)") }
 
     func detect(_ segment: Segment, confidence: Double = 0.9) {
         onEvent?(.dartDetected(DetectedDart(segment: segment, boardPosition: BoardPoint(x: 0.1, y: -0.2), confidence: confidence)))
@@ -89,6 +94,19 @@ final class VisitRecordTests: XCTestCase {
         XCTAssertEqual(source.saved.map { $0.record.darts.map(\.label) }, [["20", "20"], ["20"], ["5"]])
     }
 
+    /// The session records from start to stop: every log line, and the match at each confirmation.
+    func testTheSessionIsRecordedFromStartToStop() {
+        let (session, source) = session()
+        source.detect(.single(20))
+        session.next()
+        session.stop()
+        XCTAssertEqual(source.recording.first, "start recording")
+        XCTAssertTrue(source.recording.contains("log camera: 20 (0.90) as dart 1"))
+        XCTAssertTrue(source.recording.contains("log next"))
+        XCTAssertTrue(source.recording.contains("game 1"))
+        XCTAssertEqual(source.recording.last, "stop")
+    }
+
     func testNothingIsRecordedWithoutAFolder() {
         let (session, source) = session()
         session.visitsRoot = nil
@@ -157,6 +175,67 @@ final class VisitPictureTests: XCTestCase {
         }
         recorder.record(frame: frame(darts: 0), time: 99, image: (image(), region)); recorder.queue.sync {}
         XCTAssertEqual(try saved(recorder, name: "visit_001").board?.time, 1)
+    }
+
+    /// A recorded session holds every entry from the last checkpoint on, one per line, and every
+    /// image, so the whole session replays on a Mac; a later start moves it to the new folder.
+    func testASessionRecordingHoldsEveryEntryAndImage() throws {
+        let recorder = DetectorRecorder()
+        let region = CGRect(x: 0, y: 0, width: 64, height: 64)
+        recorder.record(frame: frame(darts: 1), time: 0, image: (image(), region)); recorder.queue.sync {}
+        recorder.record(checkpoint: MultiFrameTracker(), time: 1)
+        recorder.record(frame: frame(darts: 2), time: 2, image: (image(), region)); recorder.queue.sync {}
+        recorder.startStreaming(into: folder)
+        recorder.record(command: "endVisit", time: 3)
+        recorder.record(frame: frame(darts: 3), time: 4, image: (image(), region)); recorder.queue.sync {}
+
+        let lines = try String(contentsOf: folder.appendingPathComponent("detector.jsonl"), encoding: .utf8)
+            .split(separator: "\n").map { try JSONDecoder().decode(DetectorRecorder.Entry.self, from: Data($0.utf8)) }
+        XCTAssertEqual(lines.map(\.time), [1, 2, 3, 4], "from the last checkpoint on")
+        XCTAssertNotNil(lines.first?.checkpoint)
+        XCTAssertEqual(lines[2].command, "endVisit")
+        for entry in lines where entry.frame != nil {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent(String(format: "frames/%06d.jpg", entry.seq)).path))
+        }
+
+        // Started again in the same folder (the session restarted): nothing is written twice.
+        recorder.startStreaming(into: folder)
+        recorder.stopStreaming()
+        recorder.startStreaming(into: folder)
+        recorder.record(command: "resumeVisit", time: 6)
+        recorder.recordGame(logLine: .init(time: 6, text: "camera: 5 (0.80) as dart 1"))
+        recorder.queue.sync {}
+        let again = try String(contentsOf: folder.appendingPathComponent("detector.jsonl"), encoding: .utf8)
+            .split(separator: "\n").map { try JSONDecoder().decode(DetectorRecorder.Entry.self, from: Data($0.utf8)) }
+        XCTAssertEqual(again.map(\.time), [1, 2, 3, 4, 6])
+        XCTAssertEqual(Set(again.map(\.seq)).count, again.count)
+        XCTAssertTrue(try String(contentsOf: folder.appendingPathComponent("game_log.jsonl"), encoding: .utf8).contains("as dart 1"))
+
+        let next = folder.appendingPathComponent("next", isDirectory: true)
+        recorder.startStreaming(into: next)
+        recorder.record(command: "reset", time: 5); recorder.queue.sync {}
+        let before = try String(contentsOf: folder.appendingPathComponent("detector.jsonl"), encoding: .utf8)
+        XCTAssertFalse(before.contains("\"reset\""))
+        XCTAssertTrue(try String(contentsOf: next.appendingPathComponent("detector.jsonl"), encoding: .utf8).contains("\"reset\""))
+
+        // Stopped: nothing more is written.
+        recorder.stopStreaming()
+        recorder.record(command: "cameraStopped", time: 7); recorder.queue.sync {}
+        XCTAssertFalse(try String(contentsOf: next.appendingPathComponent("detector.jsonl"), encoding: .utf8).contains("cameraStopped"))
+    }
+
+    /// Review: a game stopped and started again at once keeps recording; the stop does not
+    /// overtake the start.
+    func testAQuickStopAndStartKeepsRecording() throws {
+        struct NoModel: Error {}
+        let engine = DetectionEngine(ignoresDartsAtStart: false, loadModel: { throw NoModel() })
+        engine.startSessionRecording(into: folder)
+        engine.stopSessionRecording()
+        engine.startSessionRecording(into: folder)
+        engine.endVisit(generation: 1)
+        engine.queue.sync {}
+        engine.recorder.queue.sync {}
+        XCTAssertTrue(try String(contentsOf: folder.appendingPathComponent("detector.jsonl"), encoding: .utf8).contains("endVisit"))
     }
 
     /// The clear view with the most darts while throwing; not a partial view, not one after the

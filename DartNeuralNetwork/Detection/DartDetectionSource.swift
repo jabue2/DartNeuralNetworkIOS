@@ -84,12 +84,24 @@ protocol DartDetectionSource: AnyObject {
     /// Saves a finished visit with the detector's best view of it as `<name>.json` and
     /// `<name>.jpg` in `folder` (see `VisitRecords`). Sources that record nothing save nothing.
     func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String)
+    /// Records every frame the detector processes from now on into `folder`, for replaying the whole
+    /// session (see `DetectorRecorder.startStreaming`). Only the camera source in a game records;
+    /// the others ignore this and the calls below.
+    func startSessionRecording(into folder: URL)
+    func stopSessionRecording()
+    /// A game log line and the match, added to the session recording while it runs.
+    func recordSession(logLine: MistakeReports.GameFile.LogLine)
+    func recordSession(game: MistakeReports.GameFile)
 }
 
 extension DartDetectionSource {
     var debugModel: DetectorDebugModel? { nil }
     func saveRecording(into folder: URL) async -> DetectorRecorder.Summary? { nil }
     func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {}
+    func startSessionRecording(into folder: URL) {}
+    func stopSessionRecording() {}
+    func recordSession(logLine: MistakeReports.GameFile.LogLine) {}
+    func recordSession(game: MistakeReports.GameFile) {}
 }
 
 enum DetectionSourceFactory {

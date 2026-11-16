@@ -88,6 +88,13 @@ final class DetectorRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var encoding = false   // guarded by `lock`
 
+    /// While a session is recorded (see `startStreaming`): every entry also goes to `detector.jsonl`
+    /// and every image to `frames/<seq>.jpg` in this folder. Confined to `queue`.
+    private var stream: (folder: URL, log: FileHandle, gameLog: FileHandle)?
+    private var streamedImages = 0
+    /// Recording stops when the phone has less free space than this.
+    static let streamMinFreeBytes: Int64 = 2_000_000_000
+
     init(logSeconds: Double = 180, imageSeconds: Double = DetectorRecorder.defaultImageSeconds, maxImageBytes: Int = 60_000_000) {
         self.logSeconds = logSeconds
         self.imageSeconds = imageSeconds
@@ -108,16 +115,23 @@ final class DetectorRecorder: @unchecked Sendable {
         // Only an image that is encoded is captured: a skipped one must not hold its camera buffer.
         let toEncode = encodeNow ? image : nil
         queue.async {
-            let seq = self.append(Entry(seq: 0, time: time, command: nil, frame: frame))
+            // A frame with an image goes to the session recording once its image is saved, so the
+            // recorded entry says whether `frames/<seq>.jpg` exists.
+            let seq = self.append(Entry(seq: 0, time: time, command: nil, frame: frame), streamNow: toEncode == nil)
             guard let (picture, region) = toEncode else { return }
             let data = Self.modelInputJPEG(picture, region: region, context: self.context)
             self.lock.withLock { self.encoding = false }
+            var recorded = Entry(seq: seq, time: time, command: nil, frame: frame)
             guard let data else {
                 if let i = self.entries.lastIndex(where: { $0.seq == seq }) { self.entries[i].frame?.image = false }
+                recorded.frame?.image = false
+                self.streamEntry(recorded)
                 return
             }
             self.images.append((seq, time, data))
             self.imageBytes += data.count
+            recorded.frame?.image = self.streamImage(data, seq: seq)
+            self.streamEntry(recorded)
             self.trim()
             self.considerForVisit(Entry(seq: seq, time: time, command: nil, frame: frame), image: data)
         }
@@ -175,6 +189,110 @@ final class DetectorRecorder: @unchecked Sendable {
         return frame.detections.filter { $0.c == RFDetrDecoder.dartClass && $0.p >= visitDartConfidence }.count
     }
 
+    // MARK: Session recording
+
+    /// Records everything from now on into `folder`, for replaying a whole session on a Mac:
+    /// `detector.jsonl` holds one `Entry` per line, `frames/<seq>.jpg` the model inputs (an entry's
+    /// `image` says whether its file was saved), `game_log.jsonl` and `game.json` what the game sends
+    /// (`recordGame`). A new recording starts with the last checkpoint in memory and everything after
+    /// it, so a replay starts from a known tracker state; a recording continued in the same folder
+    /// (the session started again) just appends. Stops by itself when the phone is nearly full or a
+    /// write fails, and with `stopStreaming()`.
+    func startStreaming(into folder: URL) {
+        queue.async {
+            guard self.stream?.folder != folder else { return }
+            self.stopStream()
+            let log = folder.appendingPathComponent("detector.jsonl")
+            let fresh: Bool
+            do {
+                try FileManager.default.createDirectory(at: folder.appendingPathComponent("frames", isDirectory: true),
+                                                        withIntermediateDirectories: true)
+                let handle = try Self.appendHandle(log)
+                fresh = try handle.offset() == 0
+                self.stream = (folder, handle, try Self.appendHandle(folder.appendingPathComponent("game_log.jsonl")))
+            } catch {
+                print("Starting the session recording failed: \(error)")
+                self.stopStream()
+                return
+            }
+            guard fresh, let start = self.entries.lastIndex(where: { $0.checkpoint != nil }) else { return }
+            for var entry in self.entries[start...] {
+                if entry.frame != nil {
+                    let image = self.images.first { $0.seq == entry.seq }
+                    entry.frame?.image = image.map { self.streamImage($0.data, seq: entry.seq) } ?? false
+                }
+                self.streamEntry(entry)
+            }
+        }
+    }
+
+    func stopStreaming() { queue.async { self.stopStream() } }
+
+    /// A game log line, appended to `game_log.jsonl` while a session is recorded.
+    func recordGame(logLine: MistakeReports.GameFile.LogLine) {
+        queue.async {
+            guard let stream = self.stream, var data = try? JSONEncoder().encode(logLine) else { return }
+            data.append(0x0A)
+            do { try stream.gameLog.write(contentsOf: data) } catch { self.streamFailed(error) }
+        }
+    }
+
+    /// The match as it stands, written to `game.json` while a session is recorded.
+    func recordGame(_ file: MistakeReports.GameFile) {
+        queue.async {
+            guard let stream = self.stream else { return }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // Atomic: a failed write keeps the last good copy.
+            do { try encoder.encode(file).write(to: stream.folder.appendingPathComponent("game.json"), options: .atomic) } catch { self.streamFailed(error) }
+        }
+    }
+
+    private static func appendHandle(_ file: URL) throws -> FileHandle {
+        if !FileManager.default.fileExists(atPath: file.path) { FileManager.default.createFile(atPath: file.path, contents: nil) }
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        return handle
+    }
+
+    private func stopStream() {
+        try? stream?.log.close()
+        try? stream?.gameLog.close()
+        stream = nil
+    }
+
+    private func streamFailed(_ error: Error) {
+        print("Session recording stopped: \(error)")
+        stopStream()
+    }
+
+    private func streamEntry(_ entry: Entry) {
+        guard let stream, var line = try? JSONEncoder().encode(entry) else { return }
+        line.append(0x0A)
+        do { try stream.log.write(contentsOf: line) } catch { streamFailed(error) }
+    }
+
+    /// Saves `frames/<seq>.jpg`; false when nothing is recorded or it could not be saved.
+    private func streamImage(_ data: Data, seq: Int) -> Bool {
+        guard let stream else { return false }
+        streamedImages += 1
+        if streamedImages % 200 == 0,
+           let free = try? stream.folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage, free < Self.streamMinFreeBytes {
+            print("Session recording stopped: the phone is nearly full")
+            stopStream()
+            return false
+        }
+        let file = stream.folder.appendingPathComponent("frames").appendingPathComponent(String(format: "%06d.jpg", seq))
+        do {
+            try data.write(to: file)
+            return true
+        } catch {
+            streamFailed(error)
+            return false
+        }
+    }
+
     func record(command: String, time: Double = CACurrentMediaTime()) {
         queue.async { _ = self.append(Entry(seq: 0, time: time, command: command, frame: nil)) }
     }
@@ -213,11 +331,12 @@ final class DetectorRecorder: @unchecked Sendable {
 
     // MARK: Private (on `queue`)
 
-    private func append(_ entry: Entry) -> Int {
+    private func append(_ entry: Entry, streamNow: Bool = true) -> Int {
         var entry = entry
         entry.seq = nextSeq
         nextSeq += 1
         entries.append(entry)
+        if streamNow { streamEntry(entry) }
         trim()
         return entry.seq
     }

@@ -110,6 +110,12 @@ final class DetectionEngine: @unchecked Sendable {
     func saveVisit(_ record: VisitRecords.Record, into folder: URL, name: String) {
         queue.async { self.recorder.saveVisit(record, into: folder, name: name) }
     }
+    /// Records every frame from now on into `folder` (see `DetectorRecorder.startStreaming`). Starts and
+    /// stops go through `queue`, so they take effect in the order called, after the frames and commands
+    /// queued before them.
+    func startSessionRecording(into folder: URL) { queue.async { self.recorder.startStreaming(into: folder) } }
+    /// Ends the session recording after every frame and command queued before this call.
+    func stopSessionRecording() { queue.async { self.recorder.stopStreaming() } }
     func setDebugEnabled(_ enabled: Bool) { queue.async { self.debugEnabled = enabled } }
 
     /// Processes a frame. Must be called on `queue`; skips frames beyond `maxFramesPerSecond`.

@@ -50,10 +50,19 @@ final class GameSession: ObservableObject, Identifiable {
         source.onEvent = { [weak self] event in self?.handle(event) }
         boardStatus = source.status
         source.start()
+        if let folder = recordingFolder { source.startSessionRecording(into: folder) }
+    }
+
+    /// Where the whole session is recorded for replaying on a Mac (`VisitRecords`): the detector's
+    /// frames and log, `game_log.jsonl` (every log line) and `game.json` (the match at the last
+    /// confirmed visit). Nil when `visitsRoot` is; sources other than the camera record nothing there.
+    var recordingFolder: URL? {
+        visitsRoot?.appendingPathComponent(visitsFolderName, isDirectory: true).appendingPathComponent("recording", isDirectory: true)
     }
 
     func stop() {
         source.stop()
+        source.stopSessionRecording()
         source.onEvent = nil
     }
 
@@ -158,9 +167,12 @@ final class GameSession: ObservableObject, Identifiable {
 
     /// Adds a line to the game log.
     func note(_ text: String) {
-        log.append(.init(time: CACurrentMediaTime(), text: text))
+        let line = MistakeReports.GameFile.LogLine(time: CACurrentMediaTime(), text: text)
+        log.append(line)
         if log.count > Self.logLimit { log.removeFirst(log.count - Self.logLimit) }
+        source.recordSession(logLine: line)
     }
+
 
     /// Saves each visit confirmed since the last call, with the darts as scored and as the camera
     /// saw them (see `VisitRecords`). A visit that Undo reopened and that is confirmed again is
@@ -185,6 +197,8 @@ final class GameSession: ObservableObject, Identifiable {
                 endedEarly: visit.endedEarly, board: nil)
             source.saveVisit(record, into: root.appendingPathComponent(visitsFolderName, isDirectory: true), name: name)
         }
+        // The match as it stands, for the session replay.
+        source.recordSession(game: MistakeReports.gameFile(match: match, log: [], origin: "session", time: CACurrentMediaTime(), date: Date()))
     }
 
     /// Undo or a correction turned the visit the detector closed back into an open one.
