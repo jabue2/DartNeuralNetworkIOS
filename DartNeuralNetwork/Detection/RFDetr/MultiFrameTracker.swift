@@ -27,6 +27,8 @@ import simd
 /// - **Misses.** Tips outside the double ring are never reported (`maxDartRadiusMM`). When the
 ///   darts of a visit with fewer than three are pulled (`pullFramesNeeded`), the tracker ends the
 ///   visit itself (`.visitEnded`, `.boardCleared`); the game counts the empty slots as misses.
+///   A visit with no dart reported ends when the player walks up to the board and back
+///   (`.emptyVisitEnded`, see `walkUpHiddenFrames`): all three missed.
 /// Codable so a mistake report can store a checkpoint of its whole state (`DetectorRecorder`).
 struct MultiFrameTracker: Codable {
     typealias Tuning = DetectorTuning
@@ -47,6 +49,28 @@ struct MultiFrameTracker: Codable {
         /// Recent usable frames in which its own tip was detected (within `stackedNeighbourMM`):
         /// a dart stacked next to it must be seen while this one still is (see `stackedDartFrames`).
         var tipSeenFrames: [Int]? = nil
+        /// Per barrel point (same order as `barrelMM`), the last usable frame with a detection
+        /// within `barrelPointRadiusMM` of it. Nil, or shorter than `barrelMM`, in checkpoints
+        /// saved before it existed: those points count as not seen.
+        var barrelSeenFrames: [Int]? = nil
+
+        /// Adds a barrel point seen in usable frame `frame`.
+        mutating func addBarrelPoint(_ point: SIMD2<Double>, frame: Int) {
+            let points = barrelMM ?? []
+            var frames = barrelSeenFrames ?? []
+            // Points from an older checkpoint without a frame: never seen.
+            while frames.count < points.count { frames.append(Int.min / 2) }
+            barrelMM = points + [point]
+            barrelSeenFrames = Array(frames.prefix(points.count)) + [frame]
+        }
+
+        /// A barrel point within `barrelPointRadiusMM` of `p` was detected at `frame` or later.
+        func barrelSeen(near p: SIMD2<Double>, since frame: Int) -> Bool {
+            let frames = barrelSeenFrames ?? []
+            return (barrelMM ?? []).enumerated().contains { j, point in
+                j < frames.count && frames[j] >= frame && simd_distance(point, p) <= Tuning.barrelPointRadiusMM
+            }
+        }
 
         /// A detection at its tip: this dart is still in the board.
         func coversTip(_ p: SIMD2<Double>) -> Bool {
@@ -73,7 +97,7 @@ struct MultiFrameTracker: Codable {
         var observations: [Observation]
         let firstFrame: Int
         var missStreak = 0
-        /// Predates a board clear or a reset: never confirms.
+        /// Predates a board clear or a reset, or lies on a dart's barrel point: never confirms.
         var isBackground: Bool
         /// Appeared next to a dart pulled moments ago (see `removedMemoryFrames`): does not
         /// confirm up to and including this usable frame, then counts as a normal track again.
@@ -81,6 +105,10 @@ struct MultiFrameTracker: Codable {
         /// Appeared after `arrivalClearFrames` clear views in a row: the camera saw it arrive
         /// rather than being uncovered (see `sameLandingFrames`). Nil in checkpoints saved before it existed.
         var seenArriving: Bool? = nil
+        /// Started within `barrelPointRadiusMM` of a barrel point of a dart in the board that was
+        /// detected in the frames just before: that barrel point, never a dart. Nil in checkpoints
+        /// saved before it existed.
+        var startedOnSeenBarrel: Bool? = nil
 
         /// Does not confirm now (background, or still suppressed).
         var isHeldBack: Bool { isBackground || suppressedUntil != nil }
@@ -168,6 +196,21 @@ struct MultiFrameTracker: Codable {
         var until: Int
     }
     private var removedDarts: [RemovedDart] = []
+    /// Watches for the player walking up to the board while the visit has no dart (see
+    /// `walkUpHiddenFrames`).
+    struct WalkUp: Equatable, Codable {
+        /// Clear views of the empty visit before the board was hidden.
+        var clearFrames = 0
+        /// Frames with the board hidden since then.
+        var hiddenFrames = 0
+        /// Clear views in a row since the board was last hidden.
+        var clearAgain = 0
+        /// The visit had been watched long enough, with no candidate dart on the board, when the
+        /// board was first hidden.
+        var counts = false
+    }
+    /// Nil while the visit has darts or is closed, and in checkpoints saved before it existed.
+    private var walkUp: WalkUp?
     private var nextID = 1
     /// Clear views in a row up to the last processed frame (see `Track.seenArriving`).
     private var clearViewStreak: Int?
@@ -196,8 +239,9 @@ struct MultiFrameTracker: Codable {
         guard phase == .awaitingRemoval else { return }
         if let closed = closedVisit {
             let ids = Set(closed.map(\.id))
+            // As they are now: their barrel points may have been seen since the visit closed.
+            resumedDarts = closed.map { dart in oldDarts.first { $0.id == dart.id } ?? dart }
             oldDarts.removeAll { ids.contains($0.id) }
-            resumedDarts = closed
         } else {
             resumedDarts = []   // the board was seen clear since: nothing of that visit is left
         }
@@ -220,6 +264,7 @@ struct MultiFrameTracker: Codable {
         phase = oldDarts.isEmpty && !candidates ? .throwing : .resetBarrier
         removalStreak = 0
         pullStreak = 0
+        walkUp = nil
     }
 
     /// The camera stopped and may have moved: lock again from scratch. Darts are kept.
@@ -245,8 +290,73 @@ struct MultiFrameTracker: Codable {
             usableFrameCount += 1
             events += updateDarts(frame, homography: h, clearView: clearView)
         }
+        // Not after this frame's events: a dart reported or a visit ended starts it over.
+        if events.allSatisfy({ if case .status = $0 { return true } else { return false } }) {
+            events += updateWalkUp(use)
+        } else {
+            walkUp = nil
+        }
         clearViewStreak = use == .usable(clearView: true) ? (clearViewStreak ?? 0) + 1 : 0
         return events
+    }
+
+    // MARK: Walking up without darts
+
+    /// Ends a visit with no dart reported when the player walks up to the board and back (see
+    /// `walkUpHiddenFrames`). Call after `updateDarts`, so the candidate checks see this frame.
+    private mutating func updateWalkUp(_ use: FrameUse) -> [DetectionEvent] {
+        guard phase == .throwing, visitDarts.isEmpty, resumedDarts.isEmpty else {
+            walkUp = nil
+            return []
+        }
+        var watch = walkUp ?? WalkUp()
+        switch use {
+        case .occluded, .noBoard:
+            // Hidden again after more than a flicker of clear views, before it was hidden long
+            // enough to count: a separate brief pass, counted on its own (review, 2026-11-16).
+            if watch.hiddenFrames > 0, watch.hiddenFrames < Tuning.walkUpHiddenFrames,
+               watch.clearAgain > Tuning.walkUpFlickerFrames {
+                watch = WalkUp(clearFrames: watch.clearFrames + watch.clearAgain)
+            }
+            if watch.hiddenFrames == 0 {
+                // A dart the camera saw but has not reported (too faint so far) may be on the
+                // board: then the player may be fetching it, not three misses.
+                let candidate = tracks.contains {
+                    !$0.isHeldBack && $0.observations.count >= Tuning.confirmMinHits
+                        && simd_length($0.tipMM) <= BoardGeometry.doubleOuterMM
+                }
+                watch.counts = watch.clearFrames >= Tuning.walkUpClearFrames && !candidate
+            }
+            watch.hiddenFrames += 1
+            watch.clearAgain = 0
+        case .usable(clearView: true):
+            guard watch.hiddenFrames > 0 else {
+                watch.clearFrames += 1
+                break
+            }
+            // A dart landing as the view clears: the visit goes on. (Young candidates only, as for
+            // a pull: a false detection that never confirms must not keep the visit open.)
+            let dartArriving = tracks.contains {
+                !$0.isHeldBack && $0.observations.last?.frame == usableFrameCount
+                    && usableFrameCount - $0.firstFrame < Tuning.pullCandidateFrames
+                    && simd_length($0.tipMM) <= BoardGeometry.doubleOuterMM
+            }
+            watch.clearAgain = dartArriving ? 0 : watch.clearAgain + 1
+            if watch.clearAgain >= Tuning.pullFramesNeeded {
+                if watch.counts && watch.hiddenFrames >= Tuning.walkUpHiddenFrames {
+                    walkUp = nil
+                    // Whatever is detected now was there before the next throw.
+                    markTracksAsBackground()
+                    return [.emptyVisitEnded]
+                }
+                // Someone passed by, or it came too early: keep watching the same visit.
+                watch = WalkUp(clearFrames: watch.clearFrames + watch.clearAgain)
+            }
+        case .usable(clearView: false), .moved, .forming:
+            watch.clearAgain = 0
+        }
+        walkUp = watch
+        return []
     }
 
     // MARK: Board lock
@@ -529,9 +639,14 @@ struct MultiFrameTracker: Codable {
                     .filter { simd_distance($0.boardMM, o.boardMM) <= Tuning.confirmedDartRadiusMM }
                     .map(\.until).max()
                 let atStart = ignoresDartsAtStart && frameIndex <= Tuning.startupBaselineFrames
+                // On a barrel point seen until now: that barrel point turning strong, not a new dart.
+                let onSeenBarrel = (openVisit + oldDarts).contains {
+                    $0.barrelSeen(near: o.boardMM, since: frameIndex - Tuning.barrelSeenRecentFrames)
+                }
                 let track = Track(id: nextID, observations: [o], firstFrame: frameIndex, isBackground: atStart,
                                   suppressedUntil: suppressedUntil,
-                                  seenArriving: (clearViewStreak ?? 0) >= Tuning.arrivalClearFrames)
+                                  seenArriving: (clearViewStreak ?? 0) >= Tuning.arrivalClearFrames,
+                                  startedOnSeenBarrel: onSeenBarrel)
                 nextID += 1
                 tracks.append(track)
                 matched.insert(track.id)
@@ -541,6 +656,7 @@ struct MultiFrameTracker: Codable {
             if matched.contains(tracks[i].id) { tracks[i].missStreak = 0 } else if clearView { tracks[i].missStreak += 1 }
         }
         tracks.removeAll { $0.missStreak > ($0.isHeldBack ? Tuning.backgroundForgetFrames : Tuning.maxMissStreak) }
+        noteBarrelsSeen(seen, frame: frameIndex)
 
         // Pulled before three darts were reported (the others missed the board): none of the
         // visit's darts and no candidate dart in this clear view, for several in a row.
@@ -590,17 +706,24 @@ struct MultiFrameTracker: Codable {
                !isStackedDart(track, beside: neighbour) {
                 continue
             }
+            // Started on a barrel point that was still being seen: part of that dart (see
+            // `barrelPointRadiusMM`). Kept as background, so its later detections join it and a
+            // new track there does not keep blocking a pull.
+            if track.startedOnSeenBarrel == true, let i = tracks.firstIndex(where: { $0.id == track.id }) {
+                tracks[i].isBackground = true
+                continue
+            }
             tracks.removeAll { $0.id == track.id }
             // Drifted onto a dart already reported: it is that dart.
             if oldDarts.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM })
                 || open.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.sameDartRadiusMM }) { continue }
             // Appeared together with a dart already reported: a point on its barrel, not a new dart.
             if let i = visitDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
-                visitDarts[i].barrelMM = (visitDarts[i].barrelMM ?? []) + [tip]
+                visitDarts[i].addBarrelPoint(tip, frame: frameIndex)
                 continue
             }
             if let i = resumedDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
-                resumedDarts[i].barrelMM = (resumedDarts[i].barrelMM ?? []) + [tip]
+                resumedDarts[i].addBarrelPoint(tip, frame: frameIndex)
                 continue
             }
             var dart = ConfirmedDart(id: track.id, boardMM: tip, segment: segment,
@@ -609,7 +732,7 @@ struct MultiFrameTracker: Codable {
                                      reportedFrame: frameIndex)
             // The other tracks that appeared with it are its barrel: they never become darts.
             let barrel = tracks.filter { Self.landedTogether($0, dart) }
-            dart.barrelMM = barrel.map(\.tipMM)
+            for point in barrel { dart.addBarrelPoint(point.tipMM, frame: frameIndex) }
             tracks.removeAll { t in barrel.contains { $0.id == t.id } }
             visitDarts.append(dart)
             events.append(.dartDetected(DetectedDart(segment: dart.segment, boardPosition: BoardPoint(millimetres: tip),
@@ -642,6 +765,25 @@ struct MultiFrameTracker: Codable {
         let frames = Set(recent.map(\.frame))
         let together = (dart.tipSeenFrames ?? []).filter { frames.contains($0) }.count
         return 2 * together >= Tuning.stackedDartFrames
+    }
+
+    /// Notes which darts in the board had a barrel point detected in usable frame `frame`.
+    private mutating func noteBarrelsSeen(_ seen: [Observation], frame: Int) {
+        func note(_ darts: inout [ConfirmedDart]) {
+            for i in darts.indices {
+                let points = darts[i].barrelMM ?? []
+                var frames = darts[i].barrelSeenFrames ?? []
+                while frames.count < points.count { frames.append(Int.min / 2) }
+                for (j, point) in points.enumerated()
+                where seen.contains(where: { simd_distance($0.boardMM, point) <= Tuning.barrelPointRadiusMM }) {
+                    frames[j] = frame
+                }
+                if !points.isEmpty { darts[i].barrelSeenFrames = frames }
+            }
+        }
+        note(&visitDarts)
+        note(&resumedDarts)
+        note(&oldDarts)
     }
 
     /// Notes that the tip of reported dart `id` was seen in usable frame `frame`.

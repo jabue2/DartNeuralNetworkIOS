@@ -134,10 +134,13 @@ enum DetectorTuning {
     /// is 0.3 mm median, 0.8 p90. Replaying the 37 reports with the model re-run on their frames
     /// (2026-11-15), this and the live merge found 6 stacked darts the phone had lost (and one
     /// 3 s sooner) and changed nothing else: no double, no new false dart.
+    /// The neighbour's tip counts as seen within `sameDartRadiusMM`: a dart landing 8 mm away
+    /// can nudge the first one or cover part of its tip, and on the phone (2026-11-16, 16-05-00)
+    /// the first dart's detection then sat 3 mm off for seconds, which held the second dart back 5 s.
     static let stackedDartFrames = 6
     static let stackedDartConfidence = 0.5
     static let stackedDartSpreadMM = 1.5
-    static let stackedNeighbourMM = 2.0
+    static let stackedNeighbourMM = sameDartRadiusMM
     /// A track whose tip lies this close to a dart of the open visit (wider than
     /// `confirmedDartRadiusMM`) needs that stacked-dart evidence, whatever its history: the one
     /// duplicate in the phone reports wandered up to 11.6 mm from its dart, and a duplicate's track
@@ -181,6 +184,14 @@ enum DetectorTuning {
     /// never count as the dart still being in the board (removal and pull look at the tip).
     static let barrelAbsorbConfidence = 0.5
     static let barrelAbsorbRadiusMM = 20.0
+    /// A track that starts within this distance of a barrel point which was detected in the last
+    /// `barrelSeenRecentFrames` usable frames is that barrel point turning strong, at any
+    /// confidence, and never becomes a dart: a new dart there would land behind a barrel the camera
+    /// still sees, which hides its tip. On the phone (2026-11-16, 16-06-08) a barrel point 42 mm up
+    /// a steep dart held at 0.35-0.6 for seconds and scored as a second dart. A barrel point that
+    /// had gone unseen and comes back strong is still a new dart landing there (above).
+    static let barrelPointRadiusMM = sameDartRadiusMM
+    static let barrelSeenRecentFrames = 3
     /// Strong detections a candidate on a barrel point needs before its faint ones count. A barrel
     /// point on the phone crept up to 0.3-0.45 with lone spikes over 0.5; a new dart there is
     /// strong for several frames in a row.
@@ -209,6 +220,23 @@ enum DetectorTuning {
     /// and reappearing in the board can keep a short visit open (tap Next). Both look the same as
     /// the other case at the moment of deciding, so a time bound is the trade-off.
     static let pullCandidateFrames = 30
+    /// Three darts that all miss the board leave nothing to see pulled, so a visit with no dart
+    /// reported ends when the player walks up to the board and back: at least `walkUpHiddenFrames`
+    /// frames with the board hidden (occluded, or no board seen), then `pullFramesNeeded` clear
+    /// views in a row with no candidate dart. It counts only after `walkUpClearFrames` clear views
+    /// of the empty visit (about 5 s: time to throw), and only when no unreported candidate dart
+    /// was on the board as the player stepped in front of it.
+    /// In the 43 phone reports (2026-11-13 to 16), walk-ups hid the board for 6-82 frames; the two
+    /// to fetch three missed darts came 104 and 118 clear views into the visit. Walking back
+    /// after a clear came 2-14 clear views in, and setting the phone up shows moved or forming
+    /// frames, not hidden ones.
+    /// Known limit: someone else stepping in front of the board for over half a second, at least
+    /// 5 s into a visit with no dart yet, ends it as three misses too (Undo reopens it).
+    static let walkUpHiddenFrames = 6
+    static let walkUpClearFrames = 50
+    /// Clear views in the middle of a walk-up that still belong to it (the player moving at the
+    /// board); after more, the next hidden frames are a new pass unless the first already counted.
+    static let walkUpFlickerFrames = 3
     /// After a clear, new tracks near a removed dart stay background this long, in case a hand
     /// hid a dart while the board looked empty.
     static let removedMemoryFrames = 30

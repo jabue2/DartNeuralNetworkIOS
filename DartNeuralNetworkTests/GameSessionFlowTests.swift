@@ -24,6 +24,7 @@ private final class FakeSource: DartDetectionSource {
     }
     func clear() { waitingForRemoval = false; onEvent?(.boardCleared) }
     func endVisitByItself() { waitingForRemoval = true; onEvent?(.visitEnded) }
+    func walkedUpWithoutDarts() { onEvent?(.emptyVisitEnded) }
 }
 
 @MainActor
@@ -152,5 +153,57 @@ final class GameSessionFlowTests: XCTestCase {
         source.clear()                                   // the winning darts are pulled: nothing to end
         XCTAssertNil(s.match.activeVisit)
         XCTAssertTrue(s.match.visits.isEmpty)
+    }
+
+    // MARK: Walking up without darts (2026-11-16)
+
+    /// Three misses: the detector saw the player walk up with no dart reported. The visit ends
+    /// empty, like Next, and the next dart is the next player's.
+    func testWalkingUpWithoutDartsEndsTheVisitAsMisses() throws {
+        let (s, source) = session()
+        source.walkedUpWithoutDarts()
+        let visit = try XCTUnwrap(s.match.visits.last)
+        XCTAssertTrue(visit.darts.isEmpty)
+        XCTAssertTrue(visit.isConfirmed)
+        XCTAssertTrue(visit.endedEarly)
+        XCTAssertEqual(s.match.currentPlayerIndex, 1)
+        XCTAssertFalse(source.waitingForRemoval, "the detector already moved on")
+        source.detect(.single(20))
+        XCTAssertEqual(s.match.visits.last?.playerIndex, 1)
+        XCTAssertEqual(s.match.remaining(for: 0), 501)
+    }
+
+    /// A dart entered by hand and then pulled: the visit ends with it, the rest are misses.
+    func testWalkingUpAfterAHandEnteredDartEndsThatVisit() {
+        let (s, source) = session()
+        s.enter(.single(19))
+        source.walkedUpWithoutDarts()
+        XCTAssertEqual(s.match.visits.last?.darts.map(\.segment), [.single(19)])
+        XCTAssertEqual(s.match.currentPlayerIndex, 1)
+    }
+
+    /// Undo reopens a visit ended this way (an empty one goes away), for the player to carry on.
+    func testUndoOfAnEmptyVisitEndedByTheCameraGivesTheTurnBack() {
+        let (s, source) = session()
+        source.walkedUpWithoutDarts()
+        s.undo()
+        XCTAssertTrue(s.match.visits.isEmpty)
+        XCTAssertEqual(s.match.currentPlayerIndex, 0)
+    }
+
+    /// A checkout waits for its tap, and a visit waiting for its darts to be pulled is ended by the clear.
+    func testWalkingUpDoesNotEndACheckoutOrAClosedVisit() {
+        let (s, source) = session(start: 40, players: ["A"])
+        source.detect(.double(20))
+        XCTAssertEqual(s.match.activeOutcome, .checkout)
+        source.walkedUpWithoutDarts()
+        XCTAssertEqual(s.match.activeOutcome, .checkout)
+        XCTAssertFalse(s.match.isOver)
+
+        let (s2, source2) = session()
+        source2.detect(.single(20)); source2.detect(.single(20)); source2.detect(.single(20))
+        source2.walkedUpWithoutDarts()
+        XCTAssertEqual(s2.match.visits.count, 1)
+        XCTAssertEqual(s2.match.currentPlayerIndex, 0, "moves on only when the darts are pulled")
     }
 }

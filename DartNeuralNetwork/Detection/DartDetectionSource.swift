@@ -44,6 +44,10 @@ enum DetectionEvent: Equatable {
     /// the others missed the board) were pulled. A `.boardCleared` follows once the darts are
     /// pulled (the RF-DETR source sends both together), and the game counts the empty slots as misses.
     case visitEnded
+    /// The detector ended a visit in which it reported no dart: the player walked up to the board
+    /// and back, so every dart missed (or was entered by hand and pulled). The game ends the visit;
+    /// its empty slots are misses.
+    case emptyVisitEnded
     /// The darts of the last visit were pulled and the board is empty again.
     case boardCleared
 }

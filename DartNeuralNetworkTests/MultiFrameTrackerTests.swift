@@ -796,4 +796,167 @@ final class MultiFrameTrackerTests: XCTestCase {
         run(40, darts: [.init(mm: tip + SIMD2(7, 2), confidence: 0.8)])
         XCTAssertEqual(darts.count, 1)
     }
+
+    // MARK: Phone session, 2026-11-16
+
+    /// The first dart's detection sat 3 mm off once a second dart landed 8 mm away (16-05-00):
+    /// the second dart still counts at once rather than seconds later.
+    func testAStackedDartCountsWhileTheFirstOnesTipIsSeenSlightlyOff() {
+        lockAndWatch()
+        let first = mm(.single(12)), second = first + SIMD2(8, 2)
+        run(25, darts: [.init(mm: first, confidence: 0.7)])
+        run(8, darts: [.init(mm: first + SIMD2(0, -3), confidence: 0.3), .init(mm: second, confidence: 0.71)])
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A barrel point that landed with its dart and then held at 0.35-0.6 for seconds is still
+    /// that dart (16-06-08: 42 mm up a steep 18, it scored as a second dart).
+    func testABarrelPointThatTurnsStrongLaterIsStillPartOfItsDart() {
+        lockAndWatch()
+        let tip = mm(.single(18), angle: -0.1), barrel = outward(tip, 40)
+        run(3, darts: [.init(mm: tip, confidence: 0.6), .init(mm: barrel, confidence: 0.3)])
+        XCTAssertEqual(darts.count, 1)
+        let levels = [0.39, 0.54, 0.5, 0.51, 0.46, 0.6, 0.56, 0.33, 0.45, 0.53]
+        for i in 0..<80 {
+            run(1, darts: [.init(mm: tip, confidence: 0.3), .init(mm: barrel, confidence: levels[i % levels.count])])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// The same after the game closed the visit (the dart read as a bust) and a correction
+    /// reopened it.
+    func testABarrelPointThatTurnsStrongWhileTheVisitIsClosedIsStillPartOfItsDart() {
+        lockAndWatch()
+        let tip = mm(.single(18), angle: -0.1), barrel = outward(tip, 40)
+        run(3, darts: [.init(mm: tip, confidence: 0.6), .init(mm: barrel, confidence: 0.3)])
+        tracker.endVisit()
+        let levels = [0.39, 0.54, 0.5, 0.51, 0.46, 0.6, 0.56, 0.33, 0.45, 0.53]
+        for i in 0..<30 {
+            run(1, darts: [.init(mm: tip, confidence: 0.3), .init(mm: barrel, confidence: levels[i % levels.count])])
+        }
+        tracker.resumeVisit()
+        for i in 0..<60 {
+            run(1, darts: [.init(mm: tip, confidence: 0.3), .init(mm: barrel, confidence: levels[i % levels.count])])
+        }
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// Review: each barrel point keeps its own recency. Seeing one barrel point does not make a
+    /// long-unseen second one a barrel still in view: a real dart landing there scores.
+    func testANewDartOnAnUnseenBarrelPointCountsWhileAnotherIsSeen() {
+        lockAndWatch()
+        let tip = SIMD2<Double>(0, -40), near = SIMD2<Double>(0, -70), far = SIMD2<Double>(0, -100)
+        run(3, darts: [.init(mm: tip, confidence: 0.8), .init(mm: near, confidence: 0.2), .init(mm: far, confidence: 0.2)])
+        XCTAssertEqual(darts.count, 1)
+        run(25, darts: [.init(mm: tip, confidence: 0.8), .init(mm: near, confidence: 0.2)])
+        run(20, darts: [.init(mm: tip, confidence: 0.8), .init(mm: near, confidence: 0.2), .init(mm: far, confidence: 0.8)])
+        XCTAssertEqual(darts.map(\.segment), [.single(20), .triple(20)])
+    }
+
+    // MARK: Walking up without darts
+
+    /// The player is at the board: two calibration points visible.
+    private func walkUp(frames: Int = 15) { run(frames, calibration: [0, 4]) }
+
+    /// Three darts that all missed: nothing was reported, and the player walks up to the board
+    /// and back. The visit ends empty once the board is clear again, and the next dart starts
+    /// a new visit.
+    func testWalkingUpAfterThreeMissesEndsTheVisit() {
+        lock()
+        run(DetectorTuning.walkUpClearFrames)
+        walkUp()
+        run(DetectorTuning.pullFramesNeeded - 1)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+        run(1)
+        XCTAssertEqual(events.filter { $0 == .emptyVisitEnded }.count, 1)
+        // Walking back to the line hides the board again: not another empty visit.
+        walkUp()
+        run(DetectorTuning.walkUpClearFrames - 10)
+        run(5, darts: [.init(mm: mm(.single(20)), confidence: 0.8)])
+        XCTAssertEqual(darts.map(\.segment), [.single(20)])
+        XCTAssertEqual(events.filter { $0 == .emptyVisitEnded }.count, 1)
+    }
+
+    /// Hiding the board soon after the visit opened (walking back after the clear) is no walk-up,
+    /// nor is a brief pass; a walk-up later in the same visit still counts.
+    func testHidingTheBoardEarlyOrBrieflyDoesNotEndTheVisit() {
+        lock()
+        run(10)
+        walkUp()
+        run(40)
+        run(DetectorTuning.walkUpHiddenFrames - 1, calibration: [0, 4])
+        run(30)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+        walkUp()
+        run(DetectorTuning.pullFramesNeeded)
+        XCTAssertTrue(events.contains(.emptyVisitEnded))
+    }
+
+    /// Review: two brief passes a second apart are not one walk-up.
+    func testTwoBriefPassesAreNotAWalkUp() {
+        lock()
+        run(60)
+        run(DetectorTuning.walkUpHiddenFrames - 1, calibration: [0, 4])
+        run(11)
+        run(1, calibration: [0, 4])
+        run(DetectorTuning.pullFramesNeeded)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+    }
+
+    /// A walk-up the camera glimpses the board through for a frame or two is still one walk-up.
+    func testAWalkUpWithAGlimpseOfTheBoardCounts() {
+        lock()
+        run(60)
+        run(4, calibration: [0, 4])
+        run(2)
+        run(4, calibration: [0, 4])
+        run(DetectorTuning.pullFramesNeeded)
+        XCTAssertTrue(events.contains(.emptyVisitEnded))
+    }
+
+    /// Someone beside the board (part of it hidden) is not a walk-up.
+    func testAPartlyHiddenBoardIsNotAWalkUp() {
+        lock()
+        run(60)
+        run(30, calibration: Set(0..<6))
+        run(30)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+    }
+
+    /// A dart the camera sees but has not reported (too faint) may be what the player fetches:
+    /// the visit stays open, as before.
+    func testAFaintUnreportedDartKeepsAnEmptyVisitOpen() {
+        lock()
+        let faint = Scene.Dart(mm: mm(.single(7)), confidence: 0.12)   // never reaches the 0.3 peak
+        run(60, darts: [faint])
+        walkUp()
+        run(30)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+        XCTAssertTrue(darts.isEmpty)
+    }
+
+    /// Someone walked past and the player throws as the board clears: the dart scores in this visit.
+    func testADartLandingAsTheBoardClearsKeepsTheVisit() {
+        lock()
+        run(60)
+        walkUp()
+        run(2)
+        let dart = Scene.Dart(mm: mm(.single(7)), confidence: 0.1)
+        run(12, darts: [dart])
+        run(1, darts: [.init(mm: dart.mm, confidence: 0.35)])
+        run(10, darts: [dart])
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+        XCTAssertEqual(darts.map(\.segment), [.single(7)])
+    }
+
+    /// A visit with a dart reported ends by the pull, never as an empty visit.
+    func testAVisitWithADartIsNotEndedAsEmpty() {
+        lock()
+        run(60)
+        run(5, darts: [.init(mm: mm(.single(20)), confidence: 0.8)])
+        walkUp()
+        run(30)
+        XCTAssertFalse(events.contains(.emptyVisitEnded))
+        XCTAssertTrue(events.contains(.visitEnded))
+    }
 }

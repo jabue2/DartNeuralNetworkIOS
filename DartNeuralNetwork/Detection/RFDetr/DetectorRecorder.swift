@@ -270,6 +270,7 @@ extension DetectorRecorder {
             let mm = dart.boardPosition.map { String(format: " at %.3f,%.3f", $0.x, $0.y) } ?? ""
             return String(format: "dart %@ %.2f", dart.segment.label, dart.confidence) + mm
         case .visitEnded: return "visitEnded"
+        case .emptyVisitEnded: return "emptyVisitEnded"
         case .boardCleared: return "boardCleared"
         }
     }

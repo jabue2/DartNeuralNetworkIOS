@@ -219,6 +219,18 @@ final class GameSession: ObservableObject, Identifiable {
             if visitAwaitingRemoval == nil, let active = match.activeVisit, !active.darts.isEmpty {
                 visitAwaitingRemoval = active.id
             }
+        case .emptyVisitEnded:
+            // The player walked up to the board with no dart of this visit seen: the visit is over,
+            // like Next (its empty slots are misses). Not after a checkout (that waits for a tap),
+            // and not while the game waits for a visit's darts to be pulled.
+            guard !match.isOver, visitAwaitingRemoval == nil, (match.activeOutcome ?? .open) == .open else {
+                note("camera: walked up without darts (ignored)")
+                return
+            }
+            note("camera: visit ended (walked up, no darts seen)")
+            match.endVisit()
+            recordConfirmedVisits()
+            Haptics.nextPlayer()
         case .boardCleared:
             note("camera: board cleared")
             // Darts pulled: move on, unless the leg was just won (that waits for a tap).
