@@ -4,14 +4,14 @@ import Foundation
 /// Every tuning constant of the RF-DETR detector in one place.
 ///
 /// Frame counts are counted in processed frames (about `maxFramesPerSecond` per second), not
-/// camera frames. The reference numbers come from the offline evaluation of v6rf12 (576 px); the bundled model is now v6rf12h (800 px), whose confidences were not re-tuned on video
+/// camera frames. The reference numbers come from the offline evaluation of v6rf12 (576 px); the bundled model is now r7ft (800 px; v6rf12h fine-tuned on the round-7 renders), whose confidences were not re-tuned on video
 /// (`~/DartSynthetic/public_check`): calibration is essentially solved, about 1% of darts are
 /// never seen, 8-14% are seen only below 0.25 confidence, and 5-8% land in the neighbouring
 /// segment, mostly tips within 2 mm of a wire.
 enum DetectorTuning {
     // MARK: Model and decoding
 
-    /// Side of the square model input in pixels: v6rf12h, RF-DETR Medium trained at 800 (v6rf12 was 576).
+    /// Side of the square model input in pixels: r7ft, RF-DETR Medium at 800 (as v6rf12h; v6rf12 was 576).
     static let modelInputSide = 800
     /// Lowest confidence decoded at all. The tracker and the debug view filter further.
     static let decodeFloor = 0.02

@@ -189,6 +189,15 @@ final class RFDetrDecodingTests: XCTestCase {
                     // at 800 px; confident ones must agree tightly. Scores are compared end to end in
                     // RealPhotoAccuracyTests (Swift and Python labels must agree on every dart).
                     XCTAssertEqual(best.confidence, p[3], accuracy: p[3] >= 0.3 ? 0.05 : 0.08, "\(name) class \(Int(p[0]))")
+                } else if p[3] < 0.5, swift.contains(where: { s in s.classIndex == Int(p[0])
+                            && simd_distance(s.point, point) < DetectorTuning.duplicateMergeDistance * size.max()
+                            && abs(s.confidence - p[3]) < 0.05
+                            // not the match of another Python detection: one Swift detection stands in for one
+                            && !python.contains { q in Int(q[0]) == s.classIndex && simd_distance(s.point, SIMD2(q[1], q[2]) * size) < 3 } }) {
+                    // A weak detection in a cluster of near-equal duplicates around one dart: fp16 rounding
+                    // decides which of them survives the merge (r7ft, IMG_5391: two near-equal detections at
+                    // 0.34-0.35 swap order between compute units). The surviving twin counts as found.
+                    matched += 1
                 } else {
                     // Only borderline detections may be missing.
                     XCTAssertLessThan(p[3], 0.15, "\(name): Python detection \(p) not found")

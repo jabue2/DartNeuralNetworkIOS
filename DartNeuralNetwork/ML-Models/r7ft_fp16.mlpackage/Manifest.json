@@ -1,18 +1,18 @@
 {
     "fileFormatVersion": "1.0.0",
     "itemInfoEntries": {
-        "8155C1FE-3220-4830-A15B-D8B601CFBFD4": {
+        "327B4D8F-8DB5-46E3-BE0E-7A6F51C2F142": {
             "author": "com.apple.CoreML",
             "description": "CoreML Model Weights",
             "name": "weights",
             "path": "com.apple.CoreML/weights"
         },
-        "A8C3DAD7-983C-4D03-B6F7-E5E1B6EAE1CE": {
+        "8819D3D7-1161-4AAE-9A1D-3E1364771EC5": {
             "author": "com.apple.CoreML",
             "description": "CoreML Model Specification",
             "name": "model.mlmodel",
             "path": "com.apple.CoreML/model.mlmodel"
         }
     },
-    "rootModelIdentifier": "A8C3DAD7-983C-4D03-B6F7-E5E1B6EAE1CE"
+    "rootModelIdentifier": "8819D3D7-1161-4AAE-9A1D-3E1364771EC5"
 }

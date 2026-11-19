@@ -30,7 +30,7 @@ final class DetectorDebugModel: ObservableObject {
     }
 }
 
-/// Dart detection with the RF-DETR model (v6rf12h) and multi-frame tracking.
+/// Dart detection with the RF-DETR model (r7ft) and multi-frame tracking.
 ///
 /// The model runs on `DetectionEngine.queue`; `MultiFrameTracker` turns its per-frame output into
 /// board status, darts and board clears. Events reach `onEvent` on the main actor in the order

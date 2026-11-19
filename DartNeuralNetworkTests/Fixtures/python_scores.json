@@ -1,6 +1,6 @@
 {
 "darts": 297,
-"correct": 285,
+"correct": 282,
 "rows": [
 {
 "name": "02491f68-IMG_5656",
@@ -551,7 +551,7 @@
 },
 {
 "truth": "S20",
-"predicted": "S20"
+"predicted": "S5"
 },
 {
 "truth": "S12",
@@ -887,7 +887,7 @@
 },
 {
 "truth": "S1",
-"predicted": "S1"
+"predicted": null
 }
 ],
 "cal_points": 12
@@ -1377,7 +1377,7 @@
 },
 {
 "truth": "S8",
-"predicted": "S8"
+"predicted": null
 }
 ],
 "cal_points": 12

@@ -200,9 +200,9 @@ enum ModelInputWriter {
     }
 }
 
-/// The bundled RF-DETR Core ML model (v6rf12h: 800 px input, fp16). Not thread-safe: use from one queue.
+/// The bundled RF-DETR Core ML model (r7ft: 800 px input, fp16). Not thread-safe: use from one queue.
 final class RFDetrModel {
-    static let resourceName = "v6rf12h_fp16"
+    static let resourceName = "r7ft_fp16"
 
     private let model: MLModel
     private let input: MLMultiArray
