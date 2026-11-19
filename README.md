@@ -36,7 +36,7 @@ In the simulator, launch with `-demoScenario live` (or `bust`, `checkout`, `summ
 
 ## Getting Started
 
-1. Clone the repository
+1. Install [Git LFS](https://git-lfs.com) (`brew install git-lfs`, then `git lfs install`) and clone the repository. The Core ML model in `ML-Models/` is stored with Git LFS; without it you get small pointer files and the app has no model.
 2. Open the project in Xcode
 3. Build and run on a compatible iOS device
 4. Prop the phone up with the camera facing the board, pick a game and start
