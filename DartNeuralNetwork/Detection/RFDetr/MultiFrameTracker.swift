@@ -109,6 +109,10 @@ struct MultiFrameTracker: Codable {
         /// detected in the frames just before: that barrel point, never a dart. Nil in checkpoints
         /// saved before it existed.
         var startedOnSeenBarrel: Bool? = nil
+        /// Started in a cluttered frame (see `clutterEnterDarts`): a point of darts in a hand. Never
+        /// confirms, is dropped at its first clear miss, and is never remembered as a barrel point.
+        /// Nil in checkpoints saved before it existed.
+        var startedInClutter: Bool? = nil
 
         /// Does not confirm now (background, or still suppressed).
         var isHeldBack: Bool { isBackground || suppressedUntil != nil }
@@ -214,8 +218,17 @@ struct MultiFrameTracker: Codable {
     private var nextID = 1
     /// Clear views in a row up to the last processed frame (see `Track.seenArriving`).
     private var clearViewStreak: Int?
+    /// Too many unexplained dart detections for a new candidate (see `clutterEnterDarts`). Nil when not, and in
+    /// checkpoints saved before it existed.
+    private var cluttered: Bool?
+    /// Frames in a row with `clutterEnterDarts` or more, before `cluttered` (nil when none, and in
+    /// checkpoints saved before it existed).
+    private var busyStreak: Int?
     /// Darts already in the board when the detector starts are background (see `startupBaselineFrames`).
     private let ignoresDartsAtStart: Bool
+    /// The camera's horizontal field of view (along the frame's long side), for `cameraPosition`.
+    /// Nil when unknown, and in checkpoints saved before it existed.
+    private(set) var cameraFieldOfViewDegrees: Double?
 
     init(ignoresDartsAtStart: Bool = true) {
         self.ignoresDartsAtStart = ignoresDartsAtStart
@@ -272,6 +285,19 @@ struct MultiFrameTracker: Codable {
         unlock()
     }
 
+    /// The camera's horizontal field of view in degrees (along the frame's long side); nil if unknown.
+    mutating func setCameraFieldOfView(_ degrees: Double?) {
+        cameraFieldOfViewDegrees = degrees
+    }
+
+    /// Where the camera stands, from the current lock (see `CameraPosition`). Nil while unlocked
+    /// or when the lock is no plausible pinhole view.
+    var cameraPosition: CameraPosition? {
+        guard let imageFromBoard = homography?.inverse else { return nil }
+        let focal = CameraPosition.focalPixels(imageSize: imageSize, fieldOfViewDegrees: cameraFieldOfViewDegrees)
+        return CameraPosition(imageFromBoard: imageFromBoard, imageSize: imageSize, focalPixels: focal)
+    }
+
     // MARK: Frames
 
     /// Processes one frame and returns the events it causes, in order.
@@ -286,9 +312,27 @@ struct MultiFrameTracker: Codable {
         lastFrameUse = use
         var events: [DetectionEvent] = []
         if let status = updateStatus() { events.append(.status(status)) }
+        // Darts in a hand (a pull): no new candidate starts in such a frame.
+        let dartCount = unexplainedDartCount(frame)
+        if cluttered == true {
+            if dartCount <= Tuning.clutterLeaveDarts { cluttered = nil }
+        } else {
+            busyStreak = dartCount >= Tuning.clutterEnterDarts ? (busyStreak ?? 0) + 1 : nil
+            if (busyStreak ?? 0) >= Tuning.clutterFramesNeeded {
+                cluttered = true
+                busyStreak = nil
+                // Candidates born in the busy frame(s) just before are the hand's too.
+                // (This frame is not counted yet: the streak's earlier frames are the last ones counted.)
+                let firstBusy = usableFrameCount - (Tuning.clutterFramesNeeded - 2)
+                for i in tracks.indices where tracks[i].firstFrame >= firstBusy && tracks[i].observations.count < Tuning.clutterFramesNeeded {
+                    tracks[i].isBackground = true
+                    tracks[i].startedInClutter = true
+                }
+            }
+        }
         if case .usable(let clearView) = use, let h = homography {
             usableFrameCount += 1
-            events += updateDarts(frame, homography: h, clearView: clearView)
+            events += updateDarts(frame, homography: h, clearView: clearView, cluttered: cluttered == true)
         }
         // Not after this frame's events: a dart reported or a visit ended starts it over.
         if events.allSatisfy({ if case .status = $0 { return true } else { return false } }) {
@@ -298,6 +342,20 @@ struct MultiFrameTracker: Codable {
         }
         clearViewStreak = use == .usable(clearView: true) ? (clearViewStreak ?? 0) + 1 : 0
         return events
+    }
+
+    /// Dart detections at `trackFloor` or more that are not at the tip or a remembered barrel point
+    /// of a dart in the board (see `clutterEnterDarts`). Before a lock, all of them.
+    private func unexplainedDartCount(_ frame: FrameObservation) -> Int {
+        let detections = frame.darts(minConfidence: Tuning.trackFloor)
+        guard let h = homography else { return detections.count }
+        let known = visitDarts + resumedDarts + oldDarts
+        return detections.filter { d in
+            guard let p = h.apply(d.point) else { return true }
+            return !known.contains { dart in
+                dart.coversTip(p) || (dart.barrelMM ?? []).contains { simd_distance($0, p) <= Tuning.barrelAbsorbRadiusMM }
+            }
+        }.count
     }
 
     // MARK: Walking up without darts
@@ -550,9 +608,12 @@ struct MultiFrameTracker: Codable {
 
     // MARK: Darts
 
-    private mutating func updateDarts(_ frame: FrameObservation, homography h: Homography, clearView: Bool) -> [DetectionEvent] {
+    /// `cluttered`: see `clutterEnterDarts`; tracks that start in such a frame never confirm.
+    private mutating func updateDarts(_ frame: FrameObservation, homography h: Homography, clearView: Bool,
+                                      cluttered: Bool) -> [DetectionEvent] {
         var events: [DetectionEvent] = []
         let frameIndex = usableFrameCount
+        let camera = cameraPosition
         removedDarts.removeAll { $0.until < frameIndex }
         for i in tracks.indices where (tracks[i].suppressedUntil ?? .max) < frameIndex {
             tracks[i].suppressedUntil = nil
@@ -638,15 +699,16 @@ struct MultiFrameTracker: Codable {
                 let suppressedUntil = removedDarts
                     .filter { simd_distance($0.boardMM, o.boardMM) <= Tuning.confirmedDartRadiusMM }
                     .map(\.until).max()
-                let atStart = ignoresDartsAtStart && frameIndex <= Tuning.startupBaselineFrames
+                // At startup, darts already in the board; in a cluttered frame, darts in a hand.
+                let background = ignoresDartsAtStart && frameIndex <= Tuning.startupBaselineFrames || cluttered
                 // On a barrel point seen until now: that barrel point turning strong, not a new dart.
                 let onSeenBarrel = (openVisit + oldDarts).contains {
                     $0.barrelSeen(near: o.boardMM, since: frameIndex - Tuning.barrelSeenRecentFrames)
                 }
-                let track = Track(id: nextID, observations: [o], firstFrame: frameIndex, isBackground: atStart,
+                let track = Track(id: nextID, observations: [o], firstFrame: frameIndex, isBackground: background,
                                   suppressedUntil: suppressedUntil,
                                   seenArriving: (clearViewStreak ?? 0) >= Tuning.arrivalClearFrames,
-                                  startedOnSeenBarrel: onSeenBarrel)
+                                  startedOnSeenBarrel: onSeenBarrel, startedInClutter: cluttered ? true : nil)
                 nextID += 1
                 tracks.append(track)
                 matched.insert(track.id)
@@ -655,7 +717,9 @@ struct MultiFrameTracker: Codable {
         for i in tracks.indices {
             if matched.contains(tracks[i].id) { tracks[i].missStreak = 0 } else if clearView { tracks[i].missStreak += 1 }
         }
-        tracks.removeAll { $0.missStreak > ($0.isHeldBack ? Tuning.backgroundForgetFrames : Tuning.maxMissStreak) }
+        tracks.removeAll {
+            $0.missStreak > ($0.startedInClutter == true ? 0 : $0.isHeldBack ? Tuning.backgroundForgetFrames : Tuning.maxMissStreak)
+        }
         noteBarrelsSeen(seen, frame: frameIndex)
 
         // Pulled before three darts were reported (the others missed the board): none of the
@@ -718,11 +782,11 @@ struct MultiFrameTracker: Codable {
             if oldDarts.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.confirmedDartRadiusMM })
                 || open.contains(where: { simd_distance($0.boardMM, tip) <= Tuning.sameDartRadiusMM }) { continue }
             // Appeared together with a dart already reported: a point on its barrel, not a new dart.
-            if let i = visitDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
+            if let i = visitDarts.firstIndex(where: { Self.landedTogether(track, $0, camera: camera) }) {
                 visitDarts[i].addBarrelPoint(tip, frame: frameIndex)
                 continue
             }
-            if let i = resumedDarts.firstIndex(where: { Self.landedTogether(track, $0) }) {
+            if let i = resumedDarts.firstIndex(where: { Self.landedTogether(track, $0, camera: camera) }) {
                 resumedDarts[i].addBarrelPoint(tip, frame: frameIndex)
                 continue
             }
@@ -730,9 +794,14 @@ struct MultiFrameTracker: Codable {
                                      confidence: track.observations.map(\.confidence).max() ?? 0,
                                      firstFrame: track.seenArriving == true ? track.firstFrame : nil,
                                      reportedFrame: frameIndex)
-            // The other tracks that appeared with it are its barrel: they never become darts.
-            let barrel = tracks.filter { Self.landedTogether($0, dart) }
-            for point in barrel { dart.addBarrelPoint(point.tipMM, frame: frameIndex) }
+            // The other tracks that appeared with it are its barrel: they never become darts, and are
+            // remembered as barrel points, even when seen only once: such points come back (phone,
+            // 2026-11-18: a twin seen once as its dart confirmed, back at 0.5-0.7 a frame later;
+            // 2026-11-16: a flicker 36 mm away, back faintly for seconds). Remembering them can hide a
+            // faint real dart landing on that spot later (`coversBarrel`); forgetting them cost real
+            // scores in both recordings.
+            let barrel = tracks.filter { Self.landedTogether($0, dart, camera: camera) }
+            for point in barrel where point.startedInClutter != true { dart.addBarrelPoint(point.tipMM, frame: frameIndex) }
             tracks.removeAll { t in barrel.contains { $0.id == t.id } }
             visitDarts.append(dart)
             events.append(.dartDetected(DetectedDart(segment: dart.segment, boardPosition: BoardPoint(millimetres: tip),
@@ -799,13 +868,29 @@ struct MultiFrameTracker: Codable {
     }
 
     /// One dart lands at a time: a track that first appeared within `sameLandingFrames` of a
-    /// dart's track and within `sameLandingRadiusMM` of its tip is part of that dart (the model
-    /// also fires along the barrel of a dart that just landed, phone test 2026-11-13).
-    static func landedTogether(_ track: Track, _ dart: ConfirmedDart) -> Bool {
+    /// dart's track, within `sameLandingRadiusMM` of it or where that dart's body can appear
+    /// (`CameraPosition.bodyZoneContains`), is part of that dart: the model also fires along the
+    /// barrel and flight of a dart that just landed (phone tests 2026-11-13 and -18).
+    /// So is a twin of its tip that starts a little later (`twinRadiusMM`, `twinFramesAfter`).
+    static func landedTogether(_ track: Track, _ dart: ConfirmedDart, camera: CameraPosition?) -> Bool {
         guard let landed = dart.firstFrame, track.seenArriving == true, track.id != dart.id else { return false }
-        return abs(track.firstFrame - landed) <= Tuning.sameLandingFrames
-            && simd_distance(track.tipMM, dart.boardMM) <= Tuning.sameLandingRadiusMM
+        let delta = track.firstFrame - landed
+        let tip = track.tipMM
+        if delta >= -Tuning.sameLandingFrames, delta <= Tuning.twinFramesAfter,
+           simd_distance(tip, dart.boardMM) <= Tuning.twinRadiusMM,
+           (track.observations.map(\.confidence).max() ?? 0) < Tuning.twinMaxConfidence { return true }
+        guard abs(delta) <= Tuning.sameLandingFrames else { return false }
+        // No second throw lands this close in time, so the near disc always applies; the camera
+        // only reaches further, along the body behind the tip.
+        if simd_distance(tip, dart.boardMM) <= Tuning.sameLandingRadiusMM { return true }
+        guard let camera else { return false }
+        // Its body, or its tip when the body confirmed first (the tip track started a frame or two
+        // later, or was fainter): one dart either way. Whichever confirms first is reported; holding
+        // a strong point back for a fainter one in front of it cost real darts on the phone
+        // recordings (faint points on the camera side of real tips are common).
+        return camera.bodyZoneContains(tip, tip: dart.boardMM) || camera.bodyZoneContains(dart.boardMM, tip: tip)
     }
+
 
     /// An observation joins a track only on the same side of the outer double wire, unless both
     /// lie close to it: a barrel or flight seen past the ring must not pull a real double's median

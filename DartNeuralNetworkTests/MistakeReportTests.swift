@@ -47,6 +47,10 @@ enum DetectorLogReplay {
         var result = Result(events: [], checkpointMismatches: 0)
         for entry in file.entries.dropFirst() {
             if let checkpoint = entry.checkpoint {
+                // The camera's field of view arrives once the camera runs, in a checkpoint of its own.
+                if checkpoint.cameraFieldOfViewDegrees != tracker.cameraFieldOfViewDegrees {
+                    tracker.setCameraFieldOfView(checkpoint.cameraFieldOfViewDegrees)
+                }
                 if (try? encoder.encode(checkpoint)) != (try? encoder.encode(tracker)) { result.checkpointMismatches += 1 }
                 continue
             }

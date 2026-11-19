@@ -173,6 +173,9 @@ final class CameraFeed: NSObject, FrameFeed {
         }
         guard let session = Self.makeSession(engine: engine, delegate: &delegate) else { failed(); return }
         self.session = session
+        if let device = (session.inputs.first as? AVCaptureDeviceInput)?.device {
+            engine.setCameraFieldOfView(Self.fieldOfView(of: device))
+        }
         let layer = AVCaptureVideoPreviewLayer(session: session)
         layer.name = "dartPreviewLayer"
         layer.videoGravity = .resizeAspectFill
@@ -180,6 +183,16 @@ final class CameraFeed: NSObject, FrameFeed {
         layer.frame = preview.bounds
         preview.layer.insertSublayer(layer, at: 0)
         sessionQueue.async { session.startRunning() }
+    }
+
+    /// Horizontal field of view in degrees along the long side of the frames, as configured (the
+    /// tracker uses it to place the camera relative to the board, see `CameraPosition`).
+    private static func fieldOfView(of device: AVCaptureDevice) -> Double {
+        let format = device.activeFormat
+        let degrees = Double(device.isGeometricDistortionCorrectionEnabled
+            ? format.geometricDistortionCorrectedVideoFieldOfView : format.videoFieldOfView)
+        let zoom = max(Double(device.videoZoomFactor), 1)
+        return 2 * atan(tan(degrees * .pi / 360) / zoom) * 180 / .pi
     }
 
     private static func makeSession(engine: DetectionEngine, delegate: inout CameraFrameDelegate?) -> AVCaptureSession? {

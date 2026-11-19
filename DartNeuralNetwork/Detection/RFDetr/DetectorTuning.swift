@@ -167,13 +167,61 @@ enum DetectorTuning {
     /// (13-36 mm from the tip in 9 phone reports, 2026-11-13); now and then such a point lasts long
     /// enough to confirm as a second dart. Those points appear in the same frame as the real tip,
     /// while separate darts appeared 2.3 s or more apart. So a track that appears within this many
-    /// usable frames of a reported dart's track, and within `sameLandingRadiusMM` of its tip, is
-    /// part of that dart and never reported. Only for tracks the camera saw arrive (after
+    /// usable frames of a reported dart's track, and where that dart's body can appear, is part of
+    /// that dart and never reported. Only for tracks the camera saw arrive (after
     /// `arrivalClearFrames` clear views): darts uncovered when a player steps away all count.
-    /// The radius is wide (barrel points lay 13-51 mm from the tip) because the timing is what
-    /// tells a barrel point from another dart.
+    /// Anywhere within `sameLandingRadiusMM` of the tip, and further along the body where the
+    /// camera angle puts it: see `bodyMaxHeightMM`. (The cone alone lost a faint point 51 mm
+    /// sideways that the disc caught, 2026-11-16 report 15-49-50.)
     static let sameLandingFrames = 3
     static let sameLandingRadiusMM = 100.0
+    /// The body of a dart that just landed, on the board map (`CameraPosition.bodyZoneContains`):
+    /// every height up to `bodyMaxHeightMM` (the flight end), pushed away from the camera by
+    /// parallax, within `bodyZoneBaseMM` plus `bodyZoneLeanPerMM` per millimetre of height (darts
+    /// lean). Fit on 1,003 held-out renders at 0-70 degrees off-axis (2026-11-19): extra points on a
+    /// dart's own body lay at height x tan(angle) behind the tip, never more than 12 mm towards the
+    /// camera; sideways off the parallax line by up to about 0.5 x height (lean). The zone covers
+    /// all of them and 95% of every extra point at 0.3 or more. On the phone (2026-11-18) a flight
+    /// end 103 mm from its tip, from a camera about 42 degrees off, confirmed as a second dart.
+    static let bodyMaxHeightMM = 150.0
+    static let bodyZoneBaseMM = 12.0
+    static let bodyZoneLeanPerMM = 0.5
+    static let bodyZoneSamples = 32
+    /// A twin of a tip: a track within `twinRadiusMM` of a dart's tip that starts up to
+    /// `twinFramesAfter` usable frames after it (and the camera saw it arrive), and never reached
+    /// `twinMaxConfidence`, is that dart. On the phone (2026-11-18) a faint twin (0.1-0.5) 13 mm
+    /// from a tip started 4 usable frames after it and scored as a third dart. Throws come a second
+    /// or more apart (at most 12 processed frames a second, fewer usable ones), so a second dart this
+    /// close that soon is not physical; real darts mostly score 0.6 or more. Only for twins; the
+    /// whole body zone keeps `sameLandingFrames`.
+    static let twinRadiusMM = 20.0
+    static let twinFramesAfter = 5
+    static let twinMaxConfidence = 0.6
+    /// Phone main camera focal length in pixels per pixel of the frame's long side, when the camera's
+    /// field of view is unknown (recordings made before it was stored). iPhone 17 Pro, 4K: 0.69 from
+    /// the user's board lock; about 71 degrees.
+    static let nominalFocalPerLongSide = 0.70
+    /// A board lock is a plausible camera view when the pinhole model's two board axes come out
+    /// nearly equally long (ratio within this) and nearly perpendicular (cosine within this).
+    /// The user's lock: 0.94 and 0.004.
+    static let cameraColumnRatioLimit = 1.25
+    static let cameraColumnCosineLimit = 0.15
+    /// The camera's distance from the board plane (not along its line of sight): a phone 0.9 m away
+    /// at 65 degrees is 380 mm from the plane. Must stay above `bodyMaxHeightMM`.
+    static let cameraDistanceRangeMM = 250.0...6000.0
+    /// A frame with this many dart detections (at `trackFloor` or more, not at the tip or a remembered
+    /// barrel point of a dart in the board) or more is cluttered: the player's hand holding darts
+    /// during a pull, whose points the model also detects. A track that starts in a cluttered frame
+    /// is background and never confirms; everything else goes on as usual, so a dart already being
+    /// tracked still confirms (phone, 2026-11-18: a dart hidden behind another, seen faintly for
+    /// seconds, confirmed as the player's hand moved the front dart, in frames of 7-16). It stays
+    /// cluttered after `clutterFramesNeeded` such frames in a row, until a frame has
+    /// `clutterLeaveDarts` or fewer. A dart landing can burst to 10 in its landing frame alone
+    /// (2026-11-13 report 23-04-24: a real 17 at 0.8); a hand stays: a false T5 from the points of
+    /// darts in the hand started in the fifth busy frame in a row (14-28, 2026-11-19).
+    static let clutterEnterDarts = 10
+    static let clutterLeaveDarts = 7
+    static let clutterFramesNeeded = 2
     /// Clear views in a row before a new track counts as seen arriving; tracks that appear while
     /// the view recovers (a player stepping away) were uncovered, not thrown, and all count.
     static let arrivalClearFrames = 3

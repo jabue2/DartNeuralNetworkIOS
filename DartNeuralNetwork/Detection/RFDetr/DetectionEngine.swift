@@ -99,6 +99,15 @@ final class DetectionEngine: @unchecked Sendable {
         queue.async { self.generation = generation; self.tracker.reset(); self.recorder.record(command: "reset") }
     }
     func cameraStopped() { queue.async { self.tracker.cameraRestarted(); self.recorder.record(command: "cameraStopped") } }
+    /// The camera's horizontal field of view along the long side of its frames (see
+    /// `MultiFrameTracker.cameraPosition`). Recorded as a checkpoint, so replays use it too.
+    func setCameraFieldOfView(_ degrees: Double?) {
+        queue.async {
+            guard self.tracker.cameraFieldOfViewDegrees != degrees else { return }
+            self.tracker.setCameraFieldOfView(degrees)
+            self.recorder.record(checkpoint: self.tracker)
+        }
+    }
 
     /// Saves the recording of the last seconds into `folder`, including every frame processed
     /// before this call. `completion` runs on the recorder's queue.

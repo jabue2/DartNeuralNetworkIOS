@@ -613,6 +613,107 @@ final class MultiFrameTrackerTests: XCTestCase {
         XCTAssertEqual(darts.count, 2)
     }
 
+    /// Darts held in the hand during a pull: the model detects their points all over the frame,
+    /// and one of them can last long enough to confirm (phone, 2026-11-19: a "T5" at 0.55 from 27
+    /// detections). A candidate that starts in such cluttered frames never scores, and a dart
+    /// thrown after them counts.
+    func testDartsInTheHandDuringAPullNeverScore() {
+        lockAndWatch()
+        let first = mm(.single(20))
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        XCTAssertEqual(darts.count, 1)
+        let held = mm(.triple(5))
+        var clutter: [Scene.Dart] = [.init(mm: held, confidence: 0.55)]
+        for i in 0..<11 { clutter.append(.init(mm: SIMD2(-120 + 22 * Double(i), 40 + 3 * Double(i % 4)), confidence: 0.12)) }
+        run(2, darts: Array(clutter.dropFirst()))   // the hand arrives
+        run(8, darts: clutter)                       // one point of the darts it holds grows strong
+        // Fewer detections, still more than a board holds: still cluttered.
+        run(4, darts: Array(clutter.prefix(9)))
+        XCTAssertEqual(darts.count, 1)
+        run(30)   // the board is clear again: the darts were pulled
+        XCTAssertTrue(events.contains(.visitEnded))
+        XCTAssertEqual(clears, 1)
+        let next = mm(.single(1), angle: 0.2)
+        run(25, darts: [.init(mm: next, confidence: 0.8)])
+        XCTAssertEqual(darts.map(\.segment), [.single(20), .single(1)])
+    }
+
+    /// A faint candidate from before a clutter (a pull) is dropped, not resumed with its old first
+    /// frame: a dart landing there later, with a point on its flight, is still one dart.
+    func testACandidateFromBeforeAClutterDoesNotSplitTheNextLanding() {
+        lockAndWatch()
+        let tip = mm(.single(20)), flight = outward(mm(.single(20)), 50)
+        let clutter = (0..<12).map { Scene.Dart(mm: SIMD2(-130 + 22 * Double($0), 120), confidence: 0.12) }
+        run(1, darts: [.init(mm: tip, confidence: 0.1)])
+        run(6, darts: clutter)
+        run(DetectorTuning.arrivalClearFrames)
+        run(25, darts: [.init(mm: tip, confidence: 0.8), .init(mm: flight, confidence: 0.4)])
+        XCTAssertEqual(darts.map(\.segment), [.single(20)])
+    }
+
+    /// A hand point that appears on the very first busy frame is the hand's too, once the next
+    /// frame shows the clutter goes on.
+    func testAHandPointFromTheFirstBusyFrameNeverScores() {
+        lockAndWatch()
+        let first = mm(.single(20))
+        run(25, darts: [.init(mm: first, confidence: 0.8)])
+        let noise = (0..<11).map { Scene.Dart(mm: SIMD2(-120 + 22 * Double($0), 40 + 3 * Double($0 % 4)), confidence: 0.12) }
+        run(4, darts: [.init(mm: first, confidence: 0.8), .init(mm: mm(.triple(5)), confidence: 0.55)] + noise)
+        XCTAssertEqual(darts.count, 1)
+    }
+
+    /// The hand leaves; a real dart landing right where one of its points was still scores.
+    func testADartLandingWhereAHandPointWasScores() {
+        lockAndWatch()
+        let spot = mm(.single(12))
+        let noise = (0..<11).map { Scene.Dart(mm: SIMD2(-120 + 22 * Double($0), 40 + 3 * Double($0 % 4)), confidence: 0.12) }
+        run(2, darts: noise)
+        run(3, darts: [.init(mm: spot, confidence: 0.3)] + noise)
+        run(1)
+        run(20, darts: [.init(mm: spot + SIMD2(3, 2), confidence: 0.8)])
+        XCTAssertEqual(darts.map(\.segment), [.single(12)])
+    }
+
+    /// A dart landing can burst into many detections in its landing frame alone (2026-11-13): one
+    /// busy frame is not a hand, and the dart scores.
+    func testADartLandingInABusyFrameScores() {
+        lockAndWatch()
+        let a = mm(.single(17))
+        let burst = (0..<10).map { Scene.Dart(mm: SIMD2(-130 + 22 * Double($0), 120), confidence: 0.1) }
+        run(1, darts: [.init(mm: a, confidence: 0.52)] + burst)
+        run(20, darts: [.init(mm: a, confidence: 0.78)])
+        XCTAssertEqual(darts.map(\.segment), [.single(17)])
+    }
+
+    /// A dart hidden behind another, seen only faintly, shows itself as the player's hand moves the
+    /// front dart (phone, 2026-11-18): it was tracked before the clutter, so it still scores.
+    func testAHiddenDartRevealedDuringClutterStillScores() {
+        lockAndWatch()
+        let a = mm(.single(5)), b = mm(.single(12))
+        run(25, darts: [.init(mm: a, confidence: 0.8)])
+        run(25, darts: [.init(mm: a, confidence: 0.8), .init(mm: b, confidence: 0.15)])
+        XCTAssertEqual(darts.count, 1)
+        let clutter = (0..<12).map { Scene.Dart(mm: SIMD2(-130 + 22 * Double($0), 120), confidence: 0.12) }
+        run(3, darts: [.init(mm: a, confidence: 0.8), .init(mm: b, confidence: 0.15)] + clutter)   // the hand arrives
+        run(6, darts: [.init(mm: a, confidence: 0.8), .init(mm: b, confidence: 0.78)] + clutter)
+        XCTAssertEqual(darts.count, 2)
+    }
+
+    /// A cluttered frame that still shows a dart of the closed visit starts its removal count over.
+    func testAClutteredFrameShowingAnOldDartRestartsItsRemoval() {
+        lockAndWatch()
+        let a = Scene.Dart(mm: mm(.single(20)), confidence: 0.7)
+        run(10, darts: [a])
+        tracker.endVisit()
+        run(DetectorTuning.removalFramesNeeded - 1)
+        let clutter = (0..<12).map { Scene.Dart(mm: SIMD2(-130 + 22 * Double($0), 120), confidence: 0.12) }
+        run(3, darts: [a] + clutter)
+        run(DetectorTuning.removalFramesNeeded - 1)
+        XCTAssertEqual(clears, 0)
+        run(1)
+        XCTAssertEqual(clears, 1)
+    }
+
     /// A barrel point of a dart that landed after the first must not hide that new dart's tip.
     func testBarrelOfTheSecondDartDoesNotCount() {
         lockAndWatch()
@@ -857,6 +958,16 @@ final class MultiFrameTrackerTests: XCTestCase {
 
     /// The player is at the board: two calibration points visible.
     private func walkUp(frames: Int = 15) { run(frames, calibration: [0, 4]) }
+
+    /// The player walking up with darts in hand: the hidden board still counts as hidden.
+    func testAClutteredWalkUpStillEndsAnEmptyVisit() {
+        lock()
+        run(DetectorTuning.walkUpClearFrames)
+        let clutter = (0..<12).map { Scene.Dart(mm: SIMD2(-130 + 22 * Double($0), 120), confidence: 0.12) }
+        run(15, darts: clutter, calibration: [0, 4])
+        run(DetectorTuning.pullFramesNeeded)
+        XCTAssertEqual(events.filter { $0 == .emptyVisitEnded }.count, 1)
+    }
 
     /// Three darts that all missed: nothing was reported, and the player walks up to the board
     /// and back. The visit ends empty once the board is clear again, and the next dart starts
